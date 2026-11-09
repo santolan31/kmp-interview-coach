@@ -1,0 +1,778 @@
+{
+  "id": "kmp-android-base",
+  "name": "Android + KMP: retos base",
+  "levels": {
+    "junior": "Junior",
+    "semi": "Semi Senior",
+    "senior": "Senior"
+  },
+  "challenges": [
+    {
+      "id": "j1",
+      "level": "junior",
+      "title": "Filtrar y ordenar usuarios",
+      "topic": "Kotlin",
+      "minutes": 10,
+      "brief": "Devuelve los nombres de los usuarios activos y mayores de edad, ordenados alfabéticamente. Usa operadores de colecciones, sin bucles manuales.",
+      "starter": "data class User(val name: String, val age: Int, val active: Boolean)\n\n// Devuelve los nombres de los usuarios activos y con 18 años o más,\n// ordenados alfabéticamente.\nfun activeAdultNames(users: List<User>): List<String> {\n    // Tu código aquí\n    TODO()\n}",
+      "checks": [
+        {
+          "label": "Filtra la lista con `filter`",
+          "pattern": "\\.filter\\s*\\{"
+        },
+        {
+          "label": "Compara la edad con 18",
+          "pattern": "age\\s*>=\\s*18|18\\s*<=\\s*\\w*\\.?age|age\\s*>\\s*17"
+        },
+        {
+          "label": "Tiene en cuenta si el usuario está activo",
+          "pattern": "\\.active\\b"
+        },
+        {
+          "label": "Transforma a nombres con `map`",
+          "pattern": "\\.map\\s*[\\{(]"
+        },
+        {
+          "label": "Ordena el resultado",
+          "pattern": "\\.sorted\\s*\\(|\\.sortedBy\\s*\\{|\\.sortedWith\\s*\\("
+        },
+        {
+          "label": "No deja `TODO()` pendiente",
+          "pattern": "TODO\\s*\\(",
+          "not": true
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bfor\\s*\\(",
+          "severity": "warn",
+          "message": "¿Por qué un `for`? El reto pide operadores de colecciones: `filter`, `map` y `sorted` lo resuelven sin bucles."
+        },
+        {
+          "pattern": "\\bmutableListOf\\s*[<(]",
+          "severity": "info",
+          "message": "Con `filter` y `map` no necesitas una lista mutable intermedia."
+        },
+        {
+          "pattern": "\\bage\\s*>\\s*18\\b",
+          "severity": "warn",
+          "message": "`> 18` deja fuera a quien tiene exactamente 18. El enunciado dice “18 años o más”."
+        },
+        {
+          "pattern": "\\.sortedDescending\\s*\\(|\\.sortedByDescending\\s*\\{",
+          "severity": "warn",
+          "message": "Esto ordena de Z a A. El reto pide orden alfabético ascendente."
+        }
+      ],
+      "solution": "fun activeAdultNames(users: List<User>): List<String> =\n    users\n        .filter { it.active && it.age >= 18 }\n        .map { it.name }\n        .sorted()",
+      "notes": [
+        "Cadena de operadores clara, una responsabilidad por paso.",
+        "Función de expresión (`=`) porque solo transforma datos.",
+        "Con listas enormes, `asSequence()` evita listas intermedias.",
+        "Pregunta de seguimiento típica: ordenar ignorando mayúsculas con `sortedWith(String.CASE_INSENSITIVE_ORDER)`."
+      ]
+    },
+    {
+      "id": "j2",
+      "level": "junior",
+      "title": "Contador que sobrevive a la rotación",
+      "topic": "Compose",
+      "minutes": 10,
+      "brief": "Crea una pantalla con un contador, un botón para sumar y otro para reiniciar. El valor no debe perderse al rotar.",
+      "starter": "@Composable\nfun CounterScreen() {\n    // 1. Un contador que empiece en 0\n    // 2. Un botón \"Sumar\" que lo incremente\n    // 3. Un botón \"Reiniciar\" que lo devuelva a 0\n    // 4. El valor debe sobrevivir a la rotación\n}",
+      "checks": [
+        {
+          "label": "Usa `rememberSaveable` para sobrevivir a la rotación",
+          "pattern": "rememberSaveable"
+        },
+        {
+          "label": "Crea estado observable (`mutableStateOf` / `mutableIntStateOf`)",
+          "pattern": "mutable(Int)?StateOf"
+        },
+        {
+          "label": "Tiene dos botones",
+          "pattern": "Button\\s*\\(",
+          "min": 2
+        },
+        {
+          "label": "Muestra el valor con `Text`",
+          "pattern": "Text\\s*\\("
+        },
+        {
+          "label": "Reinicia el contador a 0",
+          "pattern": "=\\s*0\\b"
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bremember\\s*\\{",
+          "severity": "warn",
+          "message": "`remember` pierde el valor cuando la Activity se recrea al rotar. ¿Qué variante lo guarda en el estado de la instancia?"
+        },
+        {
+          "pattern": "\\bmutableStateOf\\s*\\(\\s*0\\s*\\)",
+          "severity": "info",
+          "message": "Para un `Int` existe `mutableIntStateOf(0)`, que evita el boxing."
+        },
+        {
+          "pattern": "\\bval\\s+\\w+\\s+by\\s+(remember|rememberSaveable)\\b",
+          "severity": "error",
+          "message": "Con `by` necesitas `var`: con `val` no podrás hacer `count++`.",
+          "focus": "\\bval\\b"
+        }
+      ],
+      "solution": "@Composable\nfun CounterScreen() {\n    var count by rememberSaveable { mutableIntStateOf(0) }\n\n    Column(\n        modifier = Modifier.padding(24.dp),\n        verticalArrangement = Arrangement.spacedBy(12.dp)\n    ) {\n        Text(\"Valor: $count\", style = MaterialTheme.typography.headlineMedium)\n        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {\n            Button(onClick = { count++ }) { Text(\"Sumar\") }\n            OutlinedButton(onClick = { count = 0 }) { Text(\"Reiniciar\") }\n        }\n    }\n}",
+      "notes": [
+        "`rememberSaveable` sobrevive a la rotación y a la muerte del proceso.",
+        "`mutableIntStateOf` evita el boxing de `Int`.",
+        "En una app real, la lógica va en un ViewModel y la pantalla recibe estado y callbacks (state hoisting).",
+        "Diferencia visual entre acción principal (`Button`) y secundaria (`OutlinedButton`)."
+      ]
+    },
+    {
+      "id": "j3",
+      "level": "junior",
+      "title": "Formatear un teléfono opcional",
+      "topic": "Kotlin",
+      "minutes": 10,
+      "brief": "El teléfono puede llegar null, vacío o con espacios y guiones. Maneja todos los casos sin usar `!!`.",
+      "starter": "// Recibe un teléfono que puede venir null, vacío o con espacios y guiones.\n// - Si es null o está en blanco, devuelve \"Sin teléfono\".\n// - Si no, devuelve solo los dígitos. Ej: \"300-123 4567\" -> \"3001234567\"\nfun formatPhone(raw: String?): String {\n    TODO()\n}",
+      "checks": [
+        {
+          "label": "Maneja null y texto en blanco (`isNullOrBlank`)",
+          "pattern": "isNullOrBlank\\s*\\(|isNullOrEmpty\\s*\\(|==\\s*null"
+        },
+        {
+          "label": "Devuelve \"Sin teléfono\"",
+          "pattern": "\"Sin teléfono\""
+        },
+        {
+          "label": "Deja solo dígitos",
+          "pattern": "isDigit|Regex|\\\\D|\\[\\^0-9\\]|replace"
+        },
+        {
+          "label": "No usa `!!`",
+          "pattern": "!!",
+          "not": true
+        },
+        {
+          "label": "No deja `TODO()` pendiente",
+          "pattern": "TODO\\s*\\(",
+          "not": true
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\.replace\\s*\\(\\s*\"[-\\s]\"",
+          "severity": "info",
+          "message": "Quitar solo guiones o espacios deja pasar paréntesis, puntos o `+`. ¿Y si te quedas solo con los dígitos?",
+          "onStrings": true
+        },
+        {
+          "pattern": "\\braw\\s*==\\s*null\\b",
+          "severity": "info",
+          "message": "Cubres null, pero ¿qué pasa con `\"\"` o `\"   \"`? Mira `isNullOrBlank()`.",
+          "unless": "isBlank|isNullOrBlank|isEmpty|isNullOrEmpty"
+        }
+      ],
+      "solution": "fun formatPhone(raw: String?): String {\n    if (raw.isNullOrBlank()) return \"Sin teléfono\"\n    return raw.filter { it.isDigit() }\n}",
+      "notes": [
+        "`isNullOrBlank()` tiene un contrato: después del `if`, el compilador sabe que `raw` no es null (smart cast).",
+        "`filter { it.isDigit() }` es más legible que una regex para este caso.",
+        "Seguimiento: ¿qué pasa con un número que empieza por `+57`? ¿Lo conservas?"
+      ]
+    },
+    {
+      "id": "j4",
+      "level": "junior",
+      "title": "Nombre de la plataforma con expect/actual",
+      "topic": "KMP",
+      "minutes": 15,
+      "brief": "Declara en código común una función que devuelva el nombre de la plataforma e impleméntala para Android e iOS.",
+      "starter": "// commonMain\n// Declara una función que devuelva el nombre de la plataforma.\n\n// androidMain\n// Implementa: \"Android \" + nivel de API\n\n// iosMain\n// Implementa: nombre del sistema + versión (UIDevice)\n",
+      "checks": [
+        {
+          "label": "Declara `expect fun` en común",
+          "pattern": "expect\\s+fun\\s+\\w+\\s*\\(\\s*\\)\\s*:\\s*String"
+        },
+        {
+          "label": "Tiene dos implementaciones `actual`",
+          "pattern": "actual\\s+fun",
+          "min": 2
+        },
+        {
+          "label": "Android usa `Build.VERSION.SDK_INT`",
+          "pattern": "Build\\.VERSION\\.SDK_INT"
+        },
+        {
+          "label": "iOS usa `UIDevice`",
+          "pattern": "UIDevice"
+        }
+      ],
+      "rules": [
+        {
+          "special": "expectActual"
+        }
+      ],
+      "solution": "// commonMain\nexpect fun platformName(): String\n\n// androidMain\nimport android.os.Build\n\nactual fun platformName(): String = \"Android ${Build.VERSION.SDK_INT}\"\n\n// iosMain\nimport platform.UIKit.UIDevice\n\nactual fun platformName(): String =\n    UIDevice.currentDevice.systemName() + \" \" + UIDevice.currentDevice.systemVersion",
+      "notes": [
+        "La firma de `actual` debe coincidir exactamente con la de `expect`.",
+        "Las APIs de iOS se importan desde `platform.*` (UIKit, Foundation).",
+        "Alternativa: una `interface Platform` con `expect fun getPlatform(): Platform`, como en la plantilla oficial.",
+        "Para lógica que quieras falsear en tests, prefiere interfaces + DI."
+      ]
+    },
+    {
+      "id": "s1",
+      "level": "semi",
+      "title": "ViewModel con StateFlow y estado sellado",
+      "topic": "Arquitectura",
+      "minutes": 20,
+      "brief": "Modela el estado de la pantalla, expón un StateFlow de solo lectura y carga los productos al iniciar, manejando errores.",
+      "starter": "data class Product(val id: String, val name: String, val price: Double)\n\ninterface ProductRepository {\n    suspend fun getProducts(): List<Product>\n}\n\n// 1. Modela el estado: Loading, Success(lista) y Error(mensaje)\n// 2. Expón un StateFlow de solo lectura\n// 3. Carga los productos al crear el ViewModel\n// 4. Si falla, pasa a Error con un mensaje\n\nclass ProductsViewModel(\n    private val repository: ProductRepository\n) : ViewModel() {\n\n}",
+      "checks": [
+        {
+          "label": "Estado modelado con `sealed interface` o `sealed class`",
+          "pattern": "sealed\\s+(interface|class)"
+        },
+        {
+          "label": "`MutableStateFlow` privado (backing property)",
+          "pattern": "private\\s+val\\s+_\\w+\\s*=\\s*MutableStateFlow"
+        },
+        {
+          "label": "Expone un `StateFlow` de solo lectura",
+          "pattern": "asStateFlow\\s*\\(\\s*\\)|:\\s*StateFlow\\s*<"
+        },
+        {
+          "label": "Lanza la carga en `viewModelScope`",
+          "pattern": "viewModelScope\\.launch"
+        },
+        {
+          "label": "Carga al iniciar (`init`)",
+          "pattern": "init\\s*\\{"
+        },
+        {
+          "label": "Maneja errores",
+          "pattern": "catch\\s*\\(|\\.onFailure|runCatching"
+        },
+        {
+          "label": "Tiene un estado de error",
+          "pattern": "Error\\s*\\("
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bLiveData\\b",
+          "severity": "info",
+          "message": "El reto pide `StateFlow`. ¿Qué ventaja tiene sobre `LiveData` en código que podría compartirse con KMP?"
+        },
+        {
+          "pattern": "\\b(data\\s+)?class\\s+Loading\\b",
+          "severity": "info",
+          "message": "`Loading` no tiene datos: con `data object Loading` basta y su `toString()` es legible."
+        },
+        {
+          "pattern": "\\.collect\\s*\\{",
+          "severity": "info",
+          "message": "¿Por qué recolectas dentro del ViewModel? Para exponer estado basta con asignar `_uiState.value` o usar `stateIn`."
+        }
+      ],
+      "solution": "sealed interface ProductsUiState {\n    data object Loading : ProductsUiState\n    data class Success(val products: List<Product>) : ProductsUiState\n    data class Error(val message: String) : ProductsUiState\n}\n\nclass ProductsViewModel(\n    private val repository: ProductRepository\n) : ViewModel() {\n\n    private val _uiState =\n        MutableStateFlow<ProductsUiState>(ProductsUiState.Loading)\n    val uiState: StateFlow<ProductsUiState> = _uiState.asStateFlow()\n\n    init {\n        load()\n    }\n\n    fun load() {\n        viewModelScope.launch {\n            _uiState.value = ProductsUiState.Loading\n            _uiState.value = try {\n                ProductsUiState.Success(repository.getProducts())\n            } catch (e: CancellationException) {\n                throw e\n            } catch (e: Exception) {\n                ProductsUiState.Error(e.message ?: \"Error desconocido\")\n            }\n        }\n    }\n}",
+      "notes": [
+        "Backing property: solo el ViewModel puede escribir el estado.",
+        "`data object` (Kotlin 1.9+) da un `toString()` legible.",
+        "Relanzar `CancellationException` respeta la cancelación del scope.",
+        "Debate frecuente: cargar en `init` vs. al primer colector con `stateIn` + `onStart`. Conoce los pros de cada uno.",
+        "`_uiState.update { }` cuando el nuevo estado depende del anterior."
+      ]
+    },
+    {
+      "id": "s2",
+      "level": "semi",
+      "title": "Cliente de posts con Ktor en commonMain",
+      "topic": "KMP",
+      "minutes": 20,
+      "brief": "Modela la respuesta con kotlinx.serialization y obtén los posts con Ktor. El llamador recibe un `Result`, nunca una excepción.",
+      "starter": "// commonMain\n// API: GET https://jsonplaceholder.typicode.com/posts\n// Cada post: { \"id\": 1, \"userId\": 1, \"title\": \"...\", \"body\": \"...\" }\n\n// 1. Modela Post para kotlinx.serialization\n// 2. Implementa PostsApi.getPosts() con Ktor\n// 3. Devuelve Result<List<Post>> sin lanzar excepciones al llamador\n\nclass PostsApi(private val client: HttpClient) {\n\n}",
+      "checks": [
+        {
+          "label": "`Post` anotado con `@Serializable`",
+          "pattern": "@Serializable"
+        },
+        {
+          "label": "Función `suspend`",
+          "pattern": "suspend\\s+fun"
+        },
+        {
+          "label": "Hace la petición GET con el cliente",
+          "pattern": "\\.get\\s*\\("
+        },
+        {
+          "label": "Deserializa con `.body()`",
+          "pattern": "\\.body\\s*[<(]"
+        },
+        {
+          "label": "Devuelve `Result`",
+          "pattern": "Result\\s*<|Result\\.success|runCatching"
+        },
+        {
+          "label": "Respeta la cancelación",
+          "pattern": "CancellationException|ensureActive"
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bjava\\.\\w+",
+          "severity": "error",
+          "message": "`java.*` no existe en iOS. En `commonMain` solo puedes usar Kotlin común y librerías multiplataforma."
+        },
+        {
+          "pattern": "\\bOkHttp\\w*",
+          "severity": "warn",
+          "message": "OkHttp es solo Android/JVM. En `commonMain` usas el `HttpClient` de Ktor; OkHttp entra como engine en `androidMain`."
+        },
+        {
+          "pattern": "\\bGson\\b|\\bRetrofit\\b",
+          "severity": "warn",
+          "message": "Es una librería solo JVM. En KMP usa Ktor y kotlinx.serialization."
+        }
+      ],
+      "solution": "@Serializable\ndata class Post(\n    val id: Int,\n    val userId: Int,\n    val title: String,\n    val body: String\n)\n\nclass PostsApi(private val client: HttpClient) {\n\n    suspend fun getPosts(): Result<List<Post>> =\n        try {\n            val posts: List<Post> = client\n                .get(\"https://jsonplaceholder.typicode.com/posts\")\n                .body()\n            Result.success(posts)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            Result.failure(e)\n        }\n}\n\n// commonMain: el engine lo aporta cada plataforma\nfun createHttpClient(): HttpClient = HttpClient {\n    expectSuccess = true // lanza excepción en 4xx/5xx\n    install(ContentNegotiation) {\n        json(Json { ignoreUnknownKeys = true })\n    }\n}",
+      "notes": [
+        "Por defecto Ktor no lanza en respuestas 4xx/5xx; `expectSuccess = true` lo activa.",
+        "`ignoreUnknownKeys` evita fallos si la API agrega campos.",
+        "`runCatching` atrapa también la cancelación; si lo usas, relánzala.",
+        "Un solo `HttpClient` por app: crearlo es costoso."
+      ]
+    },
+    {
+      "id": "s3",
+      "level": "semi",
+      "title": "Entidad y DAO de notas con Room",
+      "topic": "Room",
+      "minutes": 15,
+      "brief": "Define la entidad y el DAO para observar, insertar y borrar notas, de la más reciente a la más antigua.",
+      "starter": "// Una app de notas necesita:\n// - Entidad Note: id autogenerado, title, content, createdAt (Long)\n// - Observar todas las notas, de la más reciente a la más antigua\n// - Insertar y borrar notas\n",
+      "checks": [
+        {
+          "label": "Entidad con `@Entity`",
+          "pattern": "@Entity"
+        },
+        {
+          "label": "Id autogenerado",
+          "pattern": "@PrimaryKey\\s*\\(\\s*autoGenerate\\s*=\\s*true"
+        },
+        {
+          "label": "Interfaz anotada con `@Dao`",
+          "pattern": "@Dao"
+        },
+        {
+          "label": "Observa con `Flow<List<...>>`",
+          "pattern": "Flow\\s*<\\s*List\\s*<"
+        },
+        {
+          "label": "Ordena de la más reciente a la más antigua",
+          "pattern": "(?i)ORDER\\s+BY\\s+\\w+\\s+DESC"
+        },
+        {
+          "label": "`@Insert` como función `suspend`",
+          "pattern": "@Insert[\\s\\S]{0,120}?suspend\\s+fun"
+        },
+        {
+          "label": "Permite borrar (`@Delete`)",
+          "pattern": "(?i)@Delete|DELETE\\s+FROM"
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "(?i)ORDER\\s+BY\\s+\\w+(\\s+ASC)?\\s*\"",
+          "severity": "warn",
+          "message": "Este orden va de la nota más antigua a la más reciente. ¿Qué agregas para invertirlo?",
+          "onStrings": true
+        },
+        {
+          "pattern": "\\bLiveData\\b",
+          "severity": "info",
+          "message": "Funciona, pero `Flow` se integra mejor con corrutinas y con Room en KMP."
+        },
+        {
+          "pattern": "@Insert\\s*(\\([^)]*\\))?\\s*fun\\b",
+          "severity": "warn",
+          "message": "Sin `suspend`, la escritura correría en el hilo que llama, y Room la rechaza en el principal. ¿Debería ser `suspend`?"
+        }
+      ],
+      "solution": "@Entity(tableName = \"notes\")\ndata class Note(\n    @PrimaryKey(autoGenerate = true) val id: Long = 0,\n    val title: String,\n    val content: String,\n    val createdAt: Long\n)\n\n@Dao\ninterface NoteDao {\n    @Query(\"SELECT * FROM notes ORDER BY createdAt DESC\")\n    fun observeAll(): Flow<List<Note>>\n\n    @Insert(onConflict = OnConflictStrategy.REPLACE)\n    suspend fun insert(note: Note): Long\n\n    @Delete\n    suspend fun delete(note: Note)\n}\n\n@Database(entities = [Note::class], version = 1)\nabstract class NotesDatabase : RoomDatabase() {\n    abstract fun noteDao(): NoteDao\n}",
+      "notes": [
+        "La función que devuelve `Flow` no es `suspend`; las escrituras sí.",
+        "`id = 0` como default deja que Room genere el valor.",
+        "Room 2.7+ también funciona en KMP (Android, iOS y JVM) con el driver de SQLite empaquetado.",
+        "Seguimiento: índice en `createdAt` y estrategia de migraciones al subir `version`."
+      ]
+    },
+    {
+      "id": "s4",
+      "level": "semi",
+      "title": "Lista de notas sin estado propio",
+      "topic": "Compose",
+      "minutes": 15,
+      "brief": "Crea un composable sin estado (state hoisting) que muestre las notas con claves estables y un mensaje cuando la lista esté vacía.",
+      "starter": "data class Note(val id: Long, val title: String)\n\n// Lista de notas sin estado propio (state hoisting):\n// - Recibe la lista y un callback para borrar\n// - Usa claves estables para cada elemento\n// - Muestra un mensaje cuando la lista está vacía\n// - Acepta un Modifier\n\n@Composable\nfun NotesList(\n\n) {\n\n}",
+      "checks": [
+        {
+          "label": "Usa `LazyColumn`",
+          "pattern": "LazyColumn"
+        },
+        {
+          "label": "Claves estables en `items(..., key = ...)`",
+          "pattern": "items\\s*\\([^)]*key\\s*="
+        },
+        {
+          "label": "Recibe un callback para borrar",
+          "pattern": "\\w+\\s*:\\s*\\(\\s*Note\\s*\\)\\s*->\\s*Unit"
+        },
+        {
+          "label": "Acepta un parámetro `modifier: Modifier`",
+          "pattern": "modifier\\s*:\\s*Modifier"
+        },
+        {
+          "label": "Maneja la lista vacía",
+          "pattern": "isEmpty\\s*\\(\\s*\\)"
+        },
+        {
+          "label": "No guarda la lista en estado interno",
+          "pattern": "mutableStateListOf|remember\\s*\\{\\s*notes",
+          "not": true
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bitems\\s*\\(\\s*\\w+\\s*\\)",
+          "severity": "warn",
+          "message": "Sin `key`, al borrar una nota el estado de las filas se desplaza. Agrega `key = { it.id }`."
+        },
+        {
+          "pattern": "\\bColumn\\s*\\(",
+          "severity": "warn",
+          "message": "`Column` + `forEach` compone todas las notas a la vez. ¿Qué contenedor compone solo las visibles?",
+          "onlyIf": "forEach"
+        },
+        {
+          "pattern": "\\bmutableStateListOf\\b",
+          "severity": "warn",
+          "message": "Este composable no debería guardar la lista: la recibe por parámetro (state hoisting)."
+        },
+        {
+          "pattern": "\\bviewModel\\s*\\(|\\bViewModel\\b",
+          "severity": "warn",
+          "message": "Un composable sin estado no debería conocer al ViewModel. Recibe los datos y los callbacks por parámetro."
+        },
+        {
+          "pattern": "\\bmodifier\\s*:\\s*Modifier\\b(?!\\s*=)",
+          "severity": "info",
+          "message": "Por convención, `modifier` lleva valor por defecto: `modifier: Modifier = Modifier`."
+        }
+      ],
+      "solution": "@Composable\nfun NotesList(\n    notes: List<Note>,\n    onDelete: (Note) -> Unit,\n    modifier: Modifier = Modifier\n) {\n    if (notes.isEmpty()) {\n        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {\n            Text(\"Aún no tienes notas\")\n        }\n        return\n    }\n\n    LazyColumn(\n        modifier = modifier,\n        contentPadding = PaddingValues(16.dp),\n        verticalArrangement = Arrangement.spacedBy(8.dp)\n    ) {\n        items(notes, key = { it.id }) { note ->\n            ListItem(\n                headlineContent = { Text(note.title) },\n                trailingContent = {\n                    IconButton(onClick = { onDelete(note) }) {\n                        Icon(\n                            Icons.Default.Delete,\n                            contentDescription = \"Borrar ${note.title}\"\n                        )\n                    }\n                },\n                modifier = Modifier.animateItem()\n            )\n        }\n    }\n}",
+      "notes": [
+        "Las claves estables conservan el estado de cada fila y permiten animar inserciones y borrados.",
+        "`modifier` es el primer parámetro opcional, por convención de Compose.",
+        "`contentDescription` en íconos accionables, por accesibilidad.",
+        "Un composable sin estado es fácil de previsualizar y de testear."
+      ]
+    },
+    {
+      "id": "x1",
+      "level": "senior",
+      "title": "Búsqueda reactiva con Flow",
+      "topic": "Flow",
+      "minutes": 25,
+      "brief": "Implementa la búsqueda mientras el usuario escribe: espera, no repitas, cancela la búsqueda anterior y no rompas el flujo ante errores.",
+      "starter": "interface SearchRepository {\n    suspend fun search(query: String): List<String>\n}\n\n// Requisitos:\n// - El TextField escribe el texto en el ViewModel\n// - Espera 300 ms sin escribir antes de buscar\n// - No repitas la búsqueda si el texto no cambió\n// - Si llega un texto nuevo, cancela la búsqueda en curso\n// - Texto vacío = lista vacía, sin llamar al repositorio\n// - Un error no debe romper el flujo\n// - Expón los resultados como StateFlow\n\nclass SearchViewModel(\n    private val repository: SearchRepository\n) : ViewModel() {\n\n}",
+      "checks": [
+        {
+          "label": "Espera con `debounce`",
+          "pattern": "\\.debounce\\s*\\("
+        },
+        {
+          "label": "Evita repetir con `distinctUntilChanged`",
+          "pattern": "distinctUntilChanged"
+        },
+        {
+          "label": "Cancela la búsqueda anterior (`flatMapLatest` / `mapLatest`)",
+          "pattern": "flatMapLatest|mapLatest|collectLatest"
+        },
+        {
+          "label": "No busca con texto vacío",
+          "pattern": "isBlank\\s*\\(|isEmpty\\s*\\("
+        },
+        {
+          "label": "Maneja errores sin romper el flujo",
+          "pattern": "\\.catch\\s*\\{|try\\s*\\{|runCatching"
+        },
+        {
+          "label": "Convierte a StateFlow con `stateIn`",
+          "pattern": "\\.stateIn\\s*\\("
+        },
+        {
+          "label": "Usa `WhileSubscribed`",
+          "pattern": "WhileSubscribed"
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bflatMapConcat\\b|\\bflatMapMerge\\b",
+          "severity": "warn",
+          "message": "Este operador no cancela la búsqueda anterior cuando llega un texto nuevo. ¿Cuál sí lo hace?"
+        },
+        {
+          "pattern": "\\.map\\s*\\{[^}]*repository\\.search",
+          "severity": "warn",
+          "message": "`map` espera a que termine cada búsqueda y no cancela la anterior. Mira `mapLatest` o `flatMapLatest`.",
+          "focus": "\\.map\\b"
+        },
+        {
+          "pattern": "\\bSharingStarted\\.Eagerly\\b",
+          "severity": "info",
+          "message": "`Eagerly` mantiene la búsqueda viva aunque nadie la observe. ¿Por qué no `WhileSubscribed(5_000)`?"
+        },
+        {
+          "pattern": "\\.collect\\s*\\{",
+          "severity": "info",
+          "message": "Si recolectas dentro del ViewModel, ¿cómo expones los resultados? `stateIn` lo convierte en `StateFlow` directamente."
+        },
+        {
+          "special": "catchBeforeStateIn"
+        }
+      ],
+      "solution": "@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)\nclass SearchViewModel(\n    private val repository: SearchRepository\n) : ViewModel() {\n\n    private val _query = MutableStateFlow(\"\")\n    val query: StateFlow<String> = _query.asStateFlow()\n\n    val results: StateFlow<List<String>> = _query\n        .debounce(300)\n        .map { it.trim() }\n        .distinctUntilChanged()\n        .mapLatest { q ->\n            if (q.isBlank()) emptyList()\n            else try {\n                repository.search(q)\n            } catch (e: CancellationException) {\n                throw e\n            } catch (e: Exception) {\n                emptyList()\n            }\n        }\n        .stateIn(\n            scope = viewModelScope,\n            started = SharingStarted.WhileSubscribed(5_000),\n            initialValue = emptyList()\n        )\n\n    fun onQueryChange(value: String) {\n        _query.value = value\n    }\n}",
+      "notes": [
+        "El `try` va dentro de `mapLatest`: un `.catch` al final del flujo lo terminaría y no habría más búsquedas.",
+        "`trim()` antes de `distinctUntilChanged` evita buscar de nuevo por un espacio.",
+        "En producción, modela `Loading` / `Error` en un estado sellado en vez de devolver lista vacía.",
+        "Test: `runTest` + `advanceTimeBy(300)` + Turbine para verificar que solo se busca el último texto."
+      ]
+    },
+    {
+      "id": "x2",
+      "level": "senior",
+      "title": "Repositorio offline-first",
+      "topic": "Arquitectura",
+      "minutes": 25,
+      "brief": "La UI observa siempre la base de datos local. `refresh()` trae datos de red, los guarda y devuelve un `Result` sin romper la cancelación.",
+      "starter": "interface ArticleApi { suspend fun fetchArticles(): List<ArticleDto> }\n\ninterface ArticleDao {\n    fun observeAll(): Flow<List<ArticleEntity>>\n    suspend fun upsertAll(items: List<ArticleEntity>)\n}\n\ndata class Article(val id: String, val title: String, val body: String)\n\n// Implementa un repositorio offline-first:\n// - La UI observa SIEMPRE la base de datos local\n// - refresh() trae datos de red y los guarda en la base de datos\n// - refresh() devuelve Result<Unit> y no rompe la cancelación\n// - Convierte entidades y DTOs a modelos (Article)\n\nclass ArticleRepository(\n    private val api: ArticleApi,\n    private val dao: ArticleDao\n) {\n\n}",
+      "checks": [
+        {
+          "label": "Observa desde la base de datos",
+          "pattern": "dao\\.observeAll\\s*\\(\\s*\\)"
+        },
+        {
+          "label": "Mapea a modelo de dominio",
+          "pattern": "\\.map\\s*\\{[\\s\\S]*?(toDomain|toArticle|Article\\s*\\()"
+        },
+        {
+          "label": "`refresh` es `suspend`",
+          "pattern": "suspend\\s+fun\\s+refresh"
+        },
+        {
+          "label": "Trae datos de la red",
+          "pattern": "api\\.fetchArticles\\s*\\("
+        },
+        {
+          "label": "Guarda en la base de datos",
+          "pattern": "dao\\.upsertAll\\s*\\("
+        },
+        {
+          "label": "Relanza `CancellationException`",
+          "pattern": "catch\\s*\\(\\s*\\w+\\s*:\\s*CancellationException\\s*\\)\\s*\\{\\s*throw|ensureActive"
+        },
+        {
+          "label": "Devuelve `Result`",
+          "pattern": "Result\\.(success|failure)|runCatching"
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\breturn\\s+api\\.|\\bemit\\s*\\(\\s*api\\.",
+          "severity": "warn",
+          "message": "Así la UI depende directamente de la red. En offline-first, ¿quién es la fuente de verdad?"
+        }
+      ],
+      "solution": "class ArticleRepository(\n    private val api: ArticleApi,\n    private val dao: ArticleDao\n) {\n    fun observeArticles(): Flow<List<Article>> =\n        dao.observeAll().map { entities -> entities.map { it.toDomain() } }\n\n    suspend fun refresh(): Result<Unit> =\n        try {\n            val remote = api.fetchArticles()\n            dao.upsertAll(remote.map { it.toEntity() })\n            Result.success(Unit)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            Result.failure(e)\n        }\n}\n\nprivate fun ArticleEntity.toDomain() =\n    Article(id = id, title = title, body = body)\n\nprivate fun ArticleDto.toEntity() =\n    ArticleEntity(id = id, title = title, body = body)",
+      "notes": [
+        "La UI muestra datos al instante aunque no haya red; `refresh` solo actualiza la fuente de verdad.",
+        "Mappers privados: el resto de la app solo conoce `Article`.",
+        "Seguimiento: borrar registros que ya no existen en el servidor (delete + insert en una transacción).",
+        "Sincronización periódica con WorkManager y política de caché por timestamp."
+      ]
+    },
+    {
+      "id": "x3",
+      "level": "senior",
+      "title": "Renovar el token una sola vez",
+      "topic": "Corrutinas",
+      "minutes": 20,
+      "brief": "Diez peticiones reciben 401 a la vez. Solo una debe renovar el token; las demás esperan y reutilizan el nuevo. Sin bloquear hilos.",
+      "starter": "interface AuthApi { suspend fun refreshToken(): String }\n\n// Varias peticiones reciben 401 al mismo tiempo y todas llaman a\n// TokenManager.refreshIfNeeded(staleToken).\n// Requisitos:\n// - Solo UNA llamada real a refreshToken() aunque lleguen 10 a la vez\n// - Las demás esperan y reutilizan el token nuevo\n// - No bloquees hilos\n\nclass TokenManager(private val api: AuthApi) {\n    var currentToken: String? = null\n        private set\n\n    suspend fun refreshIfNeeded(staleToken: String?): String {\n        TODO()\n    }\n}",
+      "checks": [
+        {
+          "label": "Crea un `Mutex`",
+          "pattern": "Mutex\\s*\\(\\s*\\)"
+        },
+        {
+          "label": "Protege la sección con `withLock`",
+          "pattern": "\\.withLock\\s*\\{"
+        },
+        {
+          "label": "Revisa dentro del lock si otro ya renovó",
+          "pattern": "!=\\s*staleToken|staleToken\\s*!="
+        },
+        {
+          "label": "Llama a `refreshToken()`",
+          "pattern": "refreshToken\\s*\\(\\s*\\)"
+        },
+        {
+          "label": "No usa `synchronized` ni `runBlocking`",
+          "pattern": "synchronized|runBlocking",
+          "not": true
+        },
+        {
+          "label": "No deja `TODO()` pendiente",
+          "pattern": "TODO\\s*\\(",
+          "not": true
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bReentrantLock\\b|\\.lock\\s*\\(\\s*\\)",
+          "severity": "warn",
+          "message": "Este lock bloquea el hilo. En corrutinas usa `Mutex`, que suspende."
+        },
+        {
+          "pattern": "@Volatile",
+          "severity": "info",
+          "message": "`@Volatile` da visibilidad entre hilos, no exclusión mutua: dos corrutinas podrían renovar el token a la vez."
+        },
+        {
+          "special": "withLockStale"
+        }
+      ],
+      "solution": "class TokenManager(private val api: AuthApi) {\n    private val mutex = Mutex()\n\n    var currentToken: String? = null\n        private set\n\n    suspend fun refreshIfNeeded(staleToken: String?): String =\n        mutex.withLock {\n            val token = currentToken\n            // Otra corrutina ya lo renovó mientras esperábamos el lock\n            if (token != null && token != staleToken) return@withLock token\n\n            api.refreshToken().also { currentToken = it }\n        }\n}",
+      "notes": [
+        "Doble verificación: la primera corrutina renueva; las demás entran al lock, ven un token distinto al que falló y lo reutilizan.",
+        "`Mutex` suspende en vez de bloquear y es justo (FIFO). No es reentrante: no llames `withLock` anidado.",
+        "Si `refreshToken()` falla, el lock se libera igual y la siguiente corrutina reintenta.",
+        "Con Ktor, el plugin `Auth` con `bearer { refreshTokens { } }` ya resuelve este caso."
+      ]
+    },
+    {
+      "id": "x4",
+      "level": "senior",
+      "title": "Exponer un Flow a Swift",
+      "topic": "KMP",
+      "minutes": 25,
+      "brief": "Swift no puede recolectar un Flow cómodamente. Crea un envoltorio que recolecte en el hilo principal y devuelva algo cancelable.",
+      "starter": "// iosMain\n// Swift no puede hacer collect() de un Flow cómodamente.\n// Crea un envoltorio que:\n// - Reciba un Flow<T>\n// - Exponga watch(onEach, onError) que recolecte en el hilo principal\n// - Devuelva algo que Swift pueda guardar para cancelar la suscripción\n\nclass FlowWatcher<T : Any>(private val flow: Flow<T>) {\n\n}",
+      "checks": [
+        {
+          "label": "Crea un `CoroutineScope` propio",
+          "pattern": "CoroutineScope\\s*\\("
+        },
+        {
+          "label": "Usa `SupervisorJob` o `Job`",
+          "pattern": "SupervisorJob\\s*\\(|Job\\s*\\(\\s*\\)"
+        },
+        {
+          "label": "Recolecta en `Dispatchers.Main`",
+          "pattern": "Dispatchers\\.Main"
+        },
+        {
+          "label": "Entrega cada valor al callback",
+          "pattern": "onEach"
+        },
+        {
+          "label": "Maneja errores",
+          "pattern": "\\.catch\\s*\\{|catch\\s*\\("
+        },
+        {
+          "label": "Permite cancelar",
+          "pattern": "\\.cancel\\s*\\("
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bDispatchers\\.(IO|Default)\\b",
+          "severity": "info",
+          "message": "Swift actualizará la UI desde el callback. ¿En qué hilo debería llegar cada valor?"
+        }
+      ],
+      "solution": "interface Cancellable {\n    fun cancel()\n}\n\nclass FlowWatcher<T : Any>(private val flow: Flow<T>) {\n\n    fun watch(\n        onEach: (T) -> Unit,\n        onError: (Throwable) -> Unit = {}\n    ): Cancellable {\n        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)\n\n        flow\n            .onEach { onEach(it) }\n            .catch { onError(it) }\n            .launchIn(scope)\n\n        return object : Cancellable {\n            override fun cancel() = scope.cancel()\n        }\n    }\n}\n\n// Swift:\n// let sub = FlowWatcher(flow: vm.state)\n//     .watch(onEach: { state in self.render(state) }, onError: { _ in })\n// sub.cancel() // en deinit u onDisappear",
+      "notes": [
+        "`T : Any` hace que el genérico se exporte bien a Objective-C/Swift.",
+        "Swift debe guardar la referencia y cancelar al salir; si no, la recolección sigue viva.",
+        "Los valores por defecto (`onError = {}`) no se ven desde Swift sin herramientas como SKIE.",
+        "En producción, SKIE o KMP-NativeCoroutines generan `AsyncSequence` y propagan la cancelación."
+      ]
+    },
+    {
+      "id": "x5",
+      "level": "senior",
+      "title": "Reintentos con backoff exponencial",
+      "topic": "Corrutinas",
+      "minutes": 20,
+      "brief": "Reintenta un bloque suspend con esperas que crecen hasta un máximo. Nunca reintentes una cancelación.",
+      "starter": "// Implementa retryWithBackoff:\n// - Ejecuta block hasta `times` veces en total\n// - Espera initialDelay, luego initialDelay * factor, etc. (máx. maxDelay)\n// - Si todos los intentos fallan, lanza la última excepción\n// - Nunca reintentes una cancelación\n\nsuspend fun <T> retryWithBackoff(\n    times: Int = 3,\n    initialDelay: Long = 500,\n    maxDelay: Long = 5_000,\n    factor: Double = 2.0,\n    block: suspend () -> T\n): T {\n    TODO()\n}",
+      "checks": [
+        {
+          "label": "Recorre los intentos (`repeat` / bucle)",
+          "pattern": "repeat\\s*\\(|for\\s*\\(|while\\s*\\("
+        },
+        {
+          "label": "Espera con `delay` (no bloquea)",
+          "pattern": "delay\\s*\\("
+        },
+        {
+          "label": "Multiplica la espera por `factor`",
+          "pattern": "\\*\\s*factor|factor\\s*\\*"
+        },
+        {
+          "label": "Limita la espera a `maxDelay`",
+          "pattern": "coerceAtMost|minOf|min\\s*\\("
+        },
+        {
+          "label": "No reintenta la cancelación",
+          "pattern": "CancellationException|ensureActive"
+        },
+        {
+          "label": "No usa `Thread.sleep`",
+          "pattern": "Thread\\.sleep",
+          "not": true
+        },
+        {
+          "label": "No deja `TODO()` pendiente",
+          "pattern": "TODO\\s*\\(",
+          "not": true
+        }
+      ],
+      "rules": [
+        {
+          "pattern": "\\brepeat\\s*\\(\\s*times\\s*\\)",
+          "severity": "info",
+          "message": "Si el último intento también va dentro del bucle, ¿cómo propagas su excepción? Prueba `repeat(times - 1)` y un intento final fuera."
+        },
+        {
+          "pattern": "\\bdelay\\s*\\(\\s*initialDelay\\s*\\)",
+          "severity": "info",
+          "message": "La espera no crece entre intentos. ¿Dónde aplicas `factor`?",
+          "unless": "\\*\\s*factor|factor\\s*\\*"
+        }
+      ],
+      "solution": "suspend fun <T> retryWithBackoff(\n    times: Int = 3,\n    initialDelay: Long = 500,\n    maxDelay: Long = 5_000,\n    factor: Double = 2.0,\n    block: suspend () -> T\n): T {\n    require(times > 0) { \"times debe ser mayor que 0\" }\n    var currentDelay = initialDelay\n    repeat(times - 1) {\n        try {\n            return block()\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            // Falla: se espera y se reintenta\n        }\n        delay(currentDelay)\n        currentDelay = (currentDelay * factor).toLong().coerceAtMost(maxDelay)\n    }\n    return block() // Último intento: si falla, la excepción sube\n}",
+      "notes": [
+        "`repeat` es inline, por eso `return block()` sale de la función (return no local).",
+        "El último intento va fuera del bucle para propagar su excepción sin envolverla.",
+        "Agrega jitter aleatorio para que muchos clientes no reintenten al mismo tiempo.",
+        "Reintenta solo errores transitorios (red, 5xx), no un 400 o 401. Para Flows existe `retryWhen`."
+      ]
+    }
+  ]
+}

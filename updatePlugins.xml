@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Repositorio de plugins propio. Android Studio lee este archivo para saber cuál es la última versión.
+     Lo regenera scripts/release.sh: no lo edites a mano. -->
+<plugins>
+    <plugin id="dev.kmpcoach.interview-coach"
+            url="https://github.com/santolan31/kmp-interview-coach/releases/download/v0.3.0/kmp-interview-coach-0.3.0.zip"
+            version="0.3.0">
+        <idea-version since-build="243"/>
+        <name>KMP Interview Coach</name>
+        <vendor>KMP Interview Coach</vendor>
+        <description>Tutor de IA dentro del IDE que te guía con pistas sin darte el código.</description>
+    </plugin>
+</plugins>

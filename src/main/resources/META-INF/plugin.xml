@@ -1,0 +1,65 @@
+<idea-plugin>
+    <id>dev.kmpcoach.interview-coach</id>
+    <name>KMP Interview Coach</name>
+    <vendor>KMP Interview Coach</vendor>
+
+    <description><![CDATA[
+    <p>Un tutor de IA dentro del IDE que te ayuda a entender el código que escribes en Android y Kotlin Multiplatform, sin darte la solución. Usa tu propia API de IA.</p>
+    <ul>
+      <li><b>Escalera de pistas</b>: pregunta, concepto, herramienta con un ejemplo de otros datos y pasos. Lee los errores reales del IDE.</li>
+      <li><b>Me rindo</b>: la solución explicada línea por línea, o un mensaje listo para pegar en tu chat.</li>
+      <li><b>Explícame esto</b>: preguntas de comprensión sobre el código que selecciones.</li>
+      <li><b>Análisis local en vivo</b>: marca en el editor patrones que un entrevistador cuestionaría (<code>!!</code>, <code>GlobalScope</code>,
+          estado de Compose sin <code>remember</code>, <code>MutableStateFlow</code> público, cancelación rota…) sin red y en milisegundos.</li>
+      <li><b>Retos por nivel</b> (Junior, Semi Senior y Senior) con objetivos que se marcan solos mientras escribes.</li>
+      <li><b>Tutor de IA</b> que comenta debajo de cada línea, te pregunta “¿por qué lo hiciste así?” y te da el siguiente paso sin darte la solución.</li>
+      <li><b>Trae tu propia clave</b>: Anthropic, OpenAI, Google Gemini, Groq, OpenRouter, Ollama local o cualquier API compatible con OpenAI.</li>
+      <li><b>Paquetes de retos propios</b> en <code>.coach/challenges/*.json</code> dentro de tu proyecto.</li>
+    </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.kotlin</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachLocalAnnotator"/>
+        <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachAiAnnotator"/>
+        <applicationConfigurable parentId="tools" id="dev.kmpcoach.settings" displayName="KMP Interview Coach"
+                                 instance="dev.kmpcoach.ide.CoachConfigurable"/>
+        <toolWindow id="KMP Coach" anchor="right" icon="/icons/coach.svg"
+                    factoryClass="dev.kmpcoach.ide.ui.CoachToolWindowFactory"/>
+        <notificationGroup id="KMP Interview Coach" displayType="BALLOON"/>
+        <postStartupActivity implementation="dev.kmpcoach.ide.CoachStartup"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <!-- Solo leemos texto y PSI genérico: funciona con el compilador K1 y K2. -->
+        <supportsKotlinPluginMode supportsK2="true"/>
+    </extensions>
+
+    <projectListeners>
+        <listener class="dev.kmpcoach.ide.InlayRestoreListener"
+                  topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    </projectListeners>
+
+    <actions>
+        <group id="KmpCoach.Group" text="KMP Coach" popup="true" icon="/icons/coach.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="KmpCoach.ReviewNow" class="dev.kmpcoach.ide.ReviewNowAction"
+                    text="Revisar con el tutor IA" description="El tutor revisa este archivo y comenta debajo de las líneas">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift K"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift K" replace-all="true"/>
+            </action>
+            <action id="KmpCoach.Hint" class="dev.kmpcoach.ide.HintAction"
+                    text="Dame una pista" description="Siguiente pista de la escalera: pregunta, concepto, herramienta y pasos, sin darte la solución">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift J"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift J" replace-all="true"/>
+            </action>
+            <action id="KmpCoach.Explain" class="dev.kmpcoach.ide.ExplainAction"
+                    text="Explícame esto" description="El tutor te hace preguntas sobre el código seleccionado para comprobar que lo entiendes"/>
+            <action id="KmpCoach.Ask" class="dev.kmpcoach.ide.AskTutorAction"
+                    text="Preguntarle al tutor sobre esto" description="Escribe en el chat una pregunta sobre la selección o la línea actual"/>
+        </group>
+    </actions>
+</idea-plugin>

@@ -1,0 +1,37 @@
+{
+  "id": "mi-paquete",
+  "name": "Mi paquete de ejemplo",
+  "challenges": [
+    {
+      "id": "mio-1",
+      "level": "junior",
+      "title": "Sumar los precios de un carrito",
+      "topic": "Kotlin",
+      "minutes": 10,
+      "brief": "Devuelve la suma de `price * quantity` de todos los ítems. Usa `sumOf`, sin bucles manuales.",
+      "starter": "data class Item(val price: Double, val quantity: Int)\n\nfun total(items: List<Item>): Double {\n    TODO()\n}",
+      "checks": [
+        { "label": "Usa `sumOf`", "pattern": "\\.sumOf\\s*\\{" },
+        { "label": "Multiplica precio por cantidad", "pattern": "price\\s*\\*\\s*\\w*\\.?quantity|quantity\\s*\\*\\s*\\w*\\.?price" },
+        { "label": "No deja `TODO()` pendiente", "pattern": "TODO\\s*\\(", "not": true }
+      ],
+      "rules": [
+        {
+          "pattern": "\\bfor\\s*\\(",
+          "severity": "warn",
+          "message": "¿Por qué un `for`? `sumOf` lo resuelve en una línea."
+        },
+        {
+          "pattern": "\\bvar\\s+\\w+\\s*=\\s*0",
+          "severity": "info",
+          "message": "Un acumulador mutable suele ser señal de que existe un operador de colecciones para eso."
+        }
+      ],
+      "solution": "fun total(items: List<Item>): Double =\n    items.sumOf { it.price * it.quantity }",
+      "notes": [
+        "Función de expresión para una transformación simple.",
+        "Seguimiento: ¿usarías `BigDecimal` para dinero? ¿Por qué?"
+      ]
+    }
+  ]
+}
