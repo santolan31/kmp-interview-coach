@@ -49,6 +49,14 @@ import dev.kmpcoach.core.UsageStats
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.scratch.ScratchUtil
 import dev.kmpcoach.ide.UsageTracker
+import dev.kmpcoach.ide.LearnerProfile
+import dev.kmpcoach.ide.LearningService
+import dev.kmpcoach.ide.ProjectContext
+import dev.kmpcoach.core.FileGuess
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.vfs.LocalFileSystem
 import dev.kmpcoach.ide.ChallengeFiles
 import dev.kmpcoach.ide.ChallengeRepository
 import dev.kmpcoach.ide.CoachConfigurable
@@ -155,6 +163,9 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             }
         })
         usage.addListener(this) { scheduleRefresh() }
+        ProjectContext.getInstance(project).addListener(this) { scheduleRefresh() }
+        LearningService.getInstance(project).addListener(this) { scheduleRefresh() }
+        LearnerProfile.getInstance().addListener(this) { scheduleRefresh() }
         if (settings.preset == ProviderPreset.OPENROUTER) tutor.refreshBalance()
         val bus = project.messageBus.connect(this)
         bus.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
@@ -259,12 +270,15 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         val analysis = if (isKotlin) Analyzer.analyze(text, challenge, lexical = false) else null
         val h = StringBuilder("<html><body>")
         fileHeader(h, file, isKotlin)
+        planSection(h)
         if (challenge != null && analysis != null) challengeSection(h, challenge, text, analysis) else intro(h, isKotlin)
+        if (isKotlin && analysis != null) hintSection(h, file!!)
+        comprehensionSection(h, if (isKotlin) file else null, text)
         if (isKotlin && analysis != null) {
-            hintSection(h, file!!)
             localSection(h, analysis)
-            tutorSection(h, file, text, challenge, analysis)
+            tutorSection(h, file!!, text, challenge, analysis)
         }
+        reviewSection(h)
         if (settings.state.liveMode) liveSection(h, if (isKotlin) file else null)
         chatSection(h, if (isKotlin) file else null)
         usageSection(h)
@@ -335,6 +349,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             h.append("<br>")
         }
         if (hints.isNotEmpty() && s?.lastAuto == true) h.append("<span style='color:$muted'>El tutor en vivo te dio esta pista porque llevabas un rato sin avanzar.</span><br>")
+        s?.notice?.let { h.append("<span style='color:$warn'>${esc(it)}</span> <a href='hintforce'>Necesito otra pista igual</a><br>") }
 
         when {
             tutor.isHintBusy(file) -> h.append("<span style='color:$muted'>Pensando la pista ${next?.number ?: ""}…</span><br>")
@@ -353,6 +368,157 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
 
         if (tutor.isGiveUpBusy(file)) h.append("<p style='color:$muted'>Preparando la solución explicada…</p>")
         s?.giveUp?.let { h.append("<p><b>Solución explicada</b><br>${md(it)}</p><p><a href='handoff'>Copiar para preguntarle a Claude</a></p>") }
+    }
+
+    // ---------- plan ----------
+    private var showGuessCompare = false
+
+    private fun planSection(h: StringBuilder) {
+        val ctx = ProjectContext.getInstance(project)
+        val plan = ctx.plan()
+        h.append("<p><b>Plan</b> ")
+        if (plan == null) {
+            h.append("<span style='color:$muted'>· sin plan</span><br>")
+            h.append("<span style='color:$muted'>Guarda en <code>docs/plans/</code> el plan que hagas con cualquier IA (un archivo Markdown) ")
+            h.append("y el tutor sabrá qué intentas hacer sin que se lo cuentes.</span> <a href='plan:choose'>Elegir un archivo</a></p>")
+            return
+        }
+        h.append("<span style='color:$muted'>· ${esc(plan.title)} · ${plan.doneCount}/${plan.steps.size} hechos</span><br>")
+        val step = ctx.currentStep()
+        if (step == null) {
+            h.append("<span style='color:$muted'>No encontré pasos. Usa casillas (<code>- [ ]</code>), una lista numerada o títulos <code>##</code>.</span> ")
+            h.append("<a href='plan:open'>Abrir plan</a> · <a href='plan:choose'>Cambiar</a></p>")
+            return
+        }
+        h.append("Paso ${step.index + 1}: <b>${md(step.text)}</b>")
+        if (step.done) h.append(" <span style='color:$ok'>✓ hecho</span>")
+        h.append("<br><span style='color:$muted'><a href='plan:prev'>‹ anterior</a> · <a href='plan:next'>siguiente ›</a> · ")
+        h.append("<a href='plan:pending'>primer pendiente</a> · <a href='plan:open'>abrir</a> · <a href='plan:choose'>cambiar</a></span><br>")
+        val guess = ctx.guessForStep()
+        if (guess == null) {
+            h.append("<a href='guess'>Antes de empezar: ¿qué archivos crees que toca este paso?</a>")
+        } else {
+            h.append("<span style='color:$muted'>Tu predicción: ${esc(guess)}</span> · ")
+            h.append("<a href='guesscompare'>${if (showGuessCompare) "ocultar comparación" else "comparar con lo que cambió"}</a> · <a href='guess'>cambiar</a>")
+            if (showGuessCompare) {
+                val r = FileGuess.compare(guess, ctx.changedPaths)
+                fun names(l: List<String>) = esc(l.joinToString { it.substringAfterLast('/') })
+                h.append("<br>")
+                if (ctx.changedPaths.isEmpty()) h.append("<span style='color:$muted'>Todavía no hay archivos cambiados según git.</span>")
+                if (r.hits.isNotEmpty()) h.append("<span style='color:$ok'>✓ Acertaste: ${names(r.hits)}</span><br>")
+                if (r.missed.isNotEmpty()) h.append("<span style='color:$warn'>○ También cambiaron: ${names(r.missed)}</span> <span style='color:$muted'>¿por qué hacía falta tocarlos?</span><br>")
+                if (r.wrong.isNotEmpty()) h.append("<span style='color:$muted'>· Nombraste y no cambiaron: ${esc(r.wrong.joinToString())}</span>")
+            }
+        }
+        h.append("</p>")
+    }
+
+    private fun choosePlan() {
+        val ctx = ProjectContext.getInstance(project)
+        val other = "Otro archivo…"
+        val auto = "Automático: el más reciente de docs/plans"
+        val options = listOf(auto) + ctx.availablePlans() + other
+        JBPopupFactory.getInstance().createPopupChooserBuilder(options)
+            .setTitle("Plan activo")
+            .setItemChosenCallback { choice ->
+                when (choice) {
+                    auto -> ctx.choosePlan(null)
+                    other -> FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFileDescriptor("md"), project, null) { vf ->
+                        ctx.choosePlan(ctx.relativePath(vf) ?: vf.path)
+                    }
+                    else -> ctx.choosePlan(choice)
+                }
+            }
+            .createPopup()
+            .showCenteredInCurrentWindow(project)
+    }
+
+    private fun askGuess() {
+        val ctx = ProjectContext.getInstance(project)
+        val step = ctx.currentStep() ?: return
+        val message = "Paso: ${step.text}\n\n¿Qué archivos o clases crees que vas a crear o modificar? Escríbelo como te salga, " +
+            "por ejemplo: «el HomeViewModel y un componente nuevo FavoriteButton». Al terminar, compáralo con lo que realmente cambió."
+        val answer = Messages.showMultilineInputDialog(project, message.replace("`", ""), "Antes de empezar", ctx.guessForStep().orEmpty(), Messages.getQuestionIcon(), null)
+        if (!answer.isNullOrBlank()) {
+            ctx.saveGuess(answer.trim())
+            showGuessCompare = false
+        }
+    }
+
+    // ---------- comprensión del código nuevo ----------
+    private fun comprehensionSection(h: StringBuilder, file: VirtualFile?, text: String) {
+        if (!settings.state.trackNewCode) return
+        val ctx = ProjectContext.getInstance(project)
+        val learning = LearningService.getInstance(project)
+        h.append("<p><b>Comprensión del código nuevo</b> <span style='color:$muted'>· según git, lo escriba quien lo escriba</span><br>")
+        val all = ctx.allBlocks()
+        when {
+            ctx.gitError != null -> h.append("<span style='color:$muted'>${esc(ctx.gitError!!)}</span>")
+            ctx.refreshedAt == 0L -> h.append("<span style='color:$muted'>Leyendo los cambios de git…</span>")
+            all.isEmpty() -> h.append("<span style='color:$muted'>No hay código nuevo sin commit. Cuando tú o una IA escriban código, aparecerá aquí para que compruebes que lo entiendes.</span>")
+            else -> {
+                val ignored = all.count { ctx.isIgnored(it) }
+                val counted = all.size - ignored
+                val understood = all.count { ctx.isUnderstood(it) }
+                val color = if (understood == counted) ok else if (understood * 2 >= counted) info else warn
+                h.append("Comprobaste que entiendes <b style='color:$color'>$understood de $counted</b> bloques nuevos.<br>")
+                learning.status?.let { h.append("<span style='color:$info'>${esc(it)}</span><br>") }
+                val here = if (file != null) ctx.blocksIn(file, text.lines()) else emptyList()
+                here.forEach { (b, start) ->
+                    val end = start + b.lineCount - 1
+                    h.append("<a href='line:${start - 1}'>L$start–$end</a> ")
+                    when {
+                        ctx.isUnderstood(b) -> h.append("<span style='color:$ok'>✓ entendido</span>")
+                        ctx.isIgnored(b) -> h.append("<span style='color:$muted'>sin revisión</span>")
+                        learning.isBusy(b) -> h.append("<span style='color:$info'>en curso…</span>")
+                        else -> h.append("<span style='color:$warn'>sin comprobar</span> · <a href='cpredict:${b.id}'>Predecir</a> · " +
+                            "<a href='cexplain:${b.id}'>Explicar sin mirar</a> · <a href='cignore:${b.id}'>No hace falta</a>")
+                    }
+                    h.append("<br>")
+                }
+                val elsewhere = ctx.pendingBlocks().count { b -> here.none { it.first.id == b.id } }
+                if (elsewhere > 0) h.append("<a href='cnext'>Ir al siguiente bloque sin comprobar</a> <span style='color:$muted'>($elsewhere en otros archivos)</span><br>")
+                h.append("<span style='color:$muted'>En el editor, el icono <b>?</b> del margen marca cada bloque sin comprobar.</span>")
+            }
+        }
+        val st = ctx.state
+        if (st.predictions > 0) {
+            h.append("<br><span style='color:$muted'>Tus predicciones (código y tests): ${st.predictionsRight} de ${st.predictions} acertadas.</span>")
+        }
+        h.append(" <a href='crefresh'>actualizar</a></p>")
+    }
+
+    private fun goToNextPending() {
+        val ctx = ProjectContext.getInstance(project)
+        val current = currentFile()?.let { ctx.relativePath(it) }
+        val b = ctx.pendingBlocks().sortedBy { if (it.path == current) 1 else 0 }.firstOrNull() ?: return
+        val base = ctx.basePath ?: return
+        val vf = LocalFileSystem.getInstance().findFileByIoFile(java.io.File(base, b.path)) ?: return
+        OpenFileDescriptor(project, vf, b.startLine - 1, 0).navigate(true)
+    }
+
+    // ---------- repaso ----------
+    private fun reviewSection(h: StringBuilder) {
+        val profile = LearnerProfile.getInstance()
+        val cards = profile.cards()
+        val mastered = profile.mastered()
+        if (cards.isEmpty() && mastered.isEmpty()) return
+        h.append("<p><b>Repaso</b><br>")
+        val due = profile.dueReview()
+        when {
+            LearningService.getInstance(project).isReviewBusy() -> h.append("<span style='color:$muted'>Repasando…</span><br>")
+            due != null -> {
+                h.append("Toca repasar <b>${esc(due.concept)}</b> · <a href='reviewnow'>Repasar (30 s)</a>")
+                val n = profile.dueCount()
+                if (n > 1) h.append(" <span style='color:$muted'>· $n pendientes</span>")
+                h.append("<br>")
+            }
+            cards.isNotEmpty() -> cards.minByOrNull { it.due }?.let { h.append("<span style='color:$muted'>Nada que repasar hoy. Próximo: ${esc(it.concept)} (${it.due}).</span><br>") }
+        }
+        if (mastered.isNotEmpty()) {
+            h.append("<span style='color:$ok'>Dominas: ${esc(mastered.joinToString())}</span> <span style='color:$muted'>· las pistas sobre esto serán más breves.</span>")
+        }
+        h.append("</p>")
     }
 
     /** «Me rindo»: antes de mostrar la solución, recuerda cuántas pistas quedan y deja elegir cómo verla. */
@@ -614,6 +780,34 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             desc == "handoff" -> file?.let(tutor::copyHandoff)
             desc == "newproblem" -> file?.let(tutor::resetHints)
             desc == "hidehint" -> file?.let(tutor::hideHintInEditor)
+            desc == "hintforce" -> file?.takeIf { TutorService.isKotlin(it) }?.let { tutor.requestHint(it, force = true) }
+            desc.startsWith("plan:") -> {
+                val ctx = ProjectContext.getInstance(project)
+                when (desc.removePrefix("plan:")) {
+                    "prev" -> ctx.moveStep(-1)
+                    "next" -> ctx.moveStep(1)
+                    "pending" -> ctx.followPending()
+                    "choose" -> choosePlan()
+                    "open" -> ctx.planFile()?.let { vf ->
+                        OpenFileDescriptor(project, vf, (ctx.currentStep()?.line ?: 1) - 1, 0).navigate(true)
+                    }
+                }
+                showGuessCompare = false
+            }
+            desc == "guess" -> askGuess()
+            desc == "guesscompare" -> { showGuessCompare = !showGuessCompare; scheduleRefresh() }
+            desc.startsWith("cpredict:") || desc.startsWith("cexplain:") || desc.startsWith("cignore:") -> {
+                val ctx = ProjectContext.getInstance(project)
+                val block = ctx.allBlocks().firstOrNull { it.id == desc.substringAfter(':') } ?: return
+                when (desc.substringBefore(':')) {
+                    "cpredict" -> LearningService.getInstance(project).predict(block)
+                    "cexplain" -> LearningService.getInstance(project).explain(block)
+                    "cignore" -> ctx.markIgnored(block)
+                }
+            }
+            desc == "cnext" -> goToNextPending()
+            desc == "crefresh" -> ProjectContext.getInstance(project).scheduleRefresh()
+            desc == "reviewnow" -> LearningService.getInstance(project).reviewNow()
             desc.startsWith("open:") -> BrowserUtil.browse(desc.removePrefix("open:"))
             desc == "balance" -> tutor.refreshBalance()
             desc == "resetusage" -> if (Messages.showYesNoDialog(project, "¿Reiniciar el contador de consumo acumulado?", "Consumo de la API", null) == Messages.YES) usage.resetTotals()

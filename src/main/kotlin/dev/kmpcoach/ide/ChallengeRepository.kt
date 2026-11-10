@@ -3,7 +3,8 @@ package dev.kmpcoach.ide
 import com.intellij.ide.scratch.ScratchFileService
 import com.intellij.ide.scratch.ScratchRootType
 import com.intellij.lang.Language
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
@@ -76,7 +77,7 @@ object ChallengeFiles {
         // Si ya existe, se reabre tal cual: create_if_missing sobrescribiría el código del usuario.
         // Buscar en el sistema de archivos del IDE (VFS) exige una read action, aunque estemos en el hilo de UI.
         val existing = runCatching {
-            runReadAction { ScratchFileService.getInstance().findFile(root, name, ScratchFileService.Option.existing_only) }
+            ReadAction.compute<VirtualFile?, RuntimeException> { ScratchFileService.getInstance().findFile(root, name, ScratchFileService.Option.existing_only) }
         }.getOrNull()
         val file = existing ?: root.createScratchFile(project, name, kotlin, text, ScratchFileService.Option.create_new_always) ?: return
         FileEditorManager.getInstance(project).openFile(file, true)

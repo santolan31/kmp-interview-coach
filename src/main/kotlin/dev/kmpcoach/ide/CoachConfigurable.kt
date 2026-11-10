@@ -147,6 +147,24 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
                 }.rowComment("Cuando el código no tiene errores, revisa tu enfoque y te hace preguntas, solo si cambió desde la última revisión.")
             }.enabledIf(live.component.selected)
         }
+        group("Aprendizaje") {
+            row {
+                checkBox("Pista en gris al final de la línea (Tab: otra pista · Esc: ocultar)")
+                    .bindSelected({ settings.state.ghostHints }, { settings.state.ghostHints = it })
+            }
+            row {
+                checkBox("Marcar el código nuevo (según git) que aún no compruebo que entiendo")
+                    .bindSelected({ settings.state.trackNewCode }, { settings.state.trackNewCode = it })
+            }.rowComment("Funciona con cualquier IA: lee lo que cambió en git, no la conversación. El plan se lee de docs/plans/*.md.")
+            row {
+                checkBox("Antes de ver el resultado de los tests, preguntarme qué creo que pasará")
+                    .bindSelected({ settings.state.predictTests }, { settings.state.predictTests = it })
+            }
+            row {
+                checkBox("Una pregunta de repaso al día sobre conceptos que me costaron")
+                    .bindSelected({ settings.state.dailyReview }, { settings.state.dailyReview = it })
+            }
+        }
         group("Análisis local (sin IA)") {
             row {
                 checkBox("Analizar todos los archivos Kotlin, no solo los retos")

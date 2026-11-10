@@ -34,6 +34,14 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
         var minIntervalSec by property(12)
         /** En vivo, con errores o código incompleto: segundos sin avanzar antes de que el tutor te dé una pista. */
         var stuckAfterSec by property(45)
+        /** Muestra la última pista en gris al final de la línea; Tab pide la siguiente y Esc la oculta. */
+        var ghostHints by property(true)
+        /** Antes de ver el resultado de los tests, pregunta qué crees que pasará. */
+        var predictTests by property(true)
+        /** Una pregunta de repaso al día sobre un concepto que te costó. */
+        var dailyReview by property(true)
+        /** Marca en el margen el código nuevo (según git) que aún no has comprobado que entiendes. */
+        var trackNewCode by property(true)
         var maxComments by property(5)
         var analyzeAllKotlin by property(true)
         /** Precio del modelo en USD por millón de tokens, para estimar el costo. [pricedModel] es el modelo al que corresponde. */

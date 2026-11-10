@@ -186,8 +186,15 @@ Responde solo con JSON con esta forma:
 {"linea":4,"problema":"frase corta que nombra el problema sin resolverlo","pista":"...","concepto":"nombre corto del concepto, por ejemplo filter"}
 """.trim()
 
-    fun hintUser(code: String, fileName: String, problems: List<IdeProblem>, previous: List<Hint>, focusLine: Int?, level: HintLevel) = buildString {
+    fun hintUser(
+        code: String, fileName: String, problems: List<IdeProblem>, previous: List<Hint>, focusLine: Int?, level: HintLevel,
+        goal: String? = null, mastered: List<String> = emptyList(),
+    ) = buildString {
         appendLine("ARCHIVO: $fileName")
+        if (goal != null) appendLine("Lo que el estudiante intenta hacer ahora: $goal")
+        if (mastered.isNotEmpty()) {
+            appendLine("Conceptos que ya domina (si la pista es sobre uno de ellos, sé más breve y exigente): ${mastered.take(12).joinToString()}")
+        }
         appendLine()
         problemsBlock(this, problems)
         if (previous.isNotEmpty()) {

@@ -10,7 +10,9 @@ enum class UsageKind(val id: String, val label: String) {
     CHAT("chat", "Chat"),
     HINT("hint", "Pistas"),
     GIVE_UP("giveup", "Me rindo"),
-    EXPLAIN("explain", "Explícame esto");
+    EXPLAIN("explain", "Explícame esto"),
+    COMPREHENSION("comprehension", "Comprensión de código nuevo"),
+    SPACED("spaced", "Repaso");
 
     companion object {
         fun of(id: String?) = entries.firstOrNull { it.id == id }

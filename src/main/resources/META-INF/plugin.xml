@@ -9,6 +9,9 @@
       <li><b>Escalera de pistas</b>: pregunta, concepto, herramienta con un ejemplo de otros datos y pasos. Lee los errores reales del IDE.</li>
       <li><b>Me rindo</b>: la solución explicada línea por línea, o un mensaje listo para pegar en tu chat.</li>
       <li><b>Explícame esto</b>: preguntas de comprensión sobre el código que selecciones.</li>
+      <li><b>Pista en gris</b> al final de la línea, como un autocompletado: Tab pide la siguiente.</li>
+      <li><b>Comprensión del código nuevo</b> según git, con cualquier IA: predice o explícalo sin mirar antes de darlo por entendido.</li>
+      <li><b>Plan activo</b> desde docs/plans, <b>predicción de tests</b> y <b>repaso espaciado</b>.</li>
       <li><b>Análisis local en vivo</b>: marca en el editor patrones que un entrevistador cuestionaría (<code>!!</code>, <code>GlobalScope</code>,
           estado de Compose sin <code>remember</code>, <code>MutableStateFlow</code> público, cancelación rota…) sin red y en milisegundos.</li>
       <li><b>Retos por nivel</b> (Junior, Semi Senior y Senior) con objetivos que se marcan solos mientras escribes.</li>
@@ -20,10 +23,16 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.kotlin</depends>
+    <!-- Predecir el resultado de los tests: el test runner es un plugin aparte desde 2026. Si no está, esa función se omite. -->
+    <depends optional="true" config-file="kmpcoach-tests.xml">intellij.testRunner.plugin</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachLocalAnnotator"/>
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachAiAnnotator"/>
+        <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.UnderstandingAnnotator"/>
+        <!-- Pista en gris: Tab pide la siguiente y Esc la oculta; si no hay pista, Tab y Esc funcionan como siempre. -->
+        <editorActionHandler action="EditorTab" implementationClass="dev.kmpcoach.ide.GhostTabHandler" order="first"/>
+        <editorActionHandler action="EditorEscape" implementationClass="dev.kmpcoach.ide.GhostEscapeHandler" order="first"/>
         <applicationConfigurable parentId="tools" id="dev.kmpcoach.settings" displayName="KMP Interview Coach"
                                  instance="dev.kmpcoach.ide.CoachConfigurable"/>
         <toolWindow id="KMP Coach" anchor="right" icon="/icons/coach.svg"

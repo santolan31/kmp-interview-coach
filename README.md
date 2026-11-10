@@ -20,6 +20,24 @@ Cuando te atascas, pulsa **Dame una pista** (⌘⌥⇧J / Ctrl+Alt+Mayús+J). Ca
 - **Nuevo problema** reinicia la escalera. Si resuelves los errores, se reinicia sola.
 - **Explícame esto:** selecciona código y usa *clic derecho › KMP Coach › Explícame esto*. El tutor te hace 2 o 3 preguntas para comprobar que lo entiendes; respondes en el chat y te dice qué está bien sin darte la respuesta.
 
+## Aprender con IA sin quedarse atrás
+
+La investigación con estudiantes que programan con IA ([Prather et al., 2024](https://arxiv.org/abs/2405.17739)) muestra que el riesgo no es usarla, sino la **ilusión de competencia**: creer que entiendes código que solo leíste. El plugin trabaja con cualquier IA porque no lee la conversación, sino lo que queda en tus archivos.
+
+| Función | Qué hace | En qué se basa |
+|---|---|---|
+| **Pista en gris** | La pista aparece al final de la línea, como una sugerencia de autocompletado. **Tab** pide la siguiente y **Esc** la oculta. | Andamiaje que tú controlas |
+| **Comprensión del código nuevo** | Un icono **?** en el margen marca cada bloque nuevo según `git diff` (lo escribieras tú o una IA) que aún no compruebas. Lo compruebas **prediciendo** qué hace con un ejemplo o **explicándolo sin mirar**: el bloque se pliega mientras lo explicas. | Trace-and-Predict y Lead-and-Reveal ([Kazemitabaar et al., 2025](https://arxiv.org/abs/2410.08922)) |
+| **Plan activo** | Lee tu plan de `docs/plans/*.md` (casillas, lista numerada o títulos) y le cuenta al tutor solo el paso actual. Antes de empezar un paso te pregunta qué archivos crees que toca y luego lo compara con lo que cambió. | Metacognición: planear antes de escribir |
+| **Predecir los tests** | Antes de ver el resultado de los tests te pregunta si pasarán. Si fallas, te pide tu hipótesis antes de leer el error. | PRIMM: predecir antes de ejecutar |
+| **Intenta antes de otra pista** | Si pides otra pista sin haber cambiado nada, primero te pide un intento. | Abuso de ayuda en tutores inteligentes |
+| **Ayuda que se retira** | Los conceptos que resuelves con poca ayuda pasan a «dominados» y sus pistas son más breves. | Efecto de inversión de la experiencia |
+| **Repaso espaciado** | Lo que te costó vuelve como una pregunta de 30 segundos al día siguiente, y luego cada vez más espaciado (1, 2, 4, 8… días). | Práctica de recuperación espaciada |
+
+Todo se activa o desactiva en **Ajustes › Herramientas › KMP Interview Coach › Aprendizaje**.
+
+> Para que el tutor sepa qué estás haciendo, guarda en `docs/plans/` el plan que hagas con cualquier IA. No hace falta volver a contárselo.
+
 Además, el plugin trabaja en dos capas mientras escribes:
 
 | Capa | Cuándo corre | Qué hace | Costo |
@@ -160,6 +178,8 @@ src/main/kotlin/dev/kmpcoach/
     AiClients.kt   clientes Anthropic y compatibles con OpenAI (java.net.http)
     Tutor.kt       prompts y lectura de la respuesta del tutor
     Hints.kt       escalera de pistas, filtro anti-código, detector de "atascado" y «Me rindo»
+    Context.kt     plan en Markdown, git diff, bloques de código nuevo y comparación de archivos
+    Learning.kt    anti-abuso de pistas, dominio de conceptos, repaso espaciado y prompts de comprensión
     Json.kt        JSON mínimo
   ide/             integración con el IDE
     Annotators.kt          subrayados locales y del tutor, Alt+Enter

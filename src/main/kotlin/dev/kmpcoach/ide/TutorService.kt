@@ -9,7 +9,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
@@ -34,7 +34,9 @@ import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.ChatMessage
 import dev.kmpcoach.core.CodeGuard
 import dev.kmpcoach.core.CommentType
+import dev.kmpcoach.core.HelpPolicy
 import dev.kmpcoach.core.Hint
+import dev.kmpcoach.core.Mastery
 import dev.kmpcoach.core.HintLevel
 import dev.kmpcoach.core.HintParser
 import dev.kmpcoach.core.HintPrompts
@@ -91,6 +93,11 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         /** Errores del IDE cuando se pidió la última pista: si después llegan a cero, el problema se resolvió y la escalera empieza de nuevo. */
         @Volatile var problemsAtLastHint = 0
         @Volatile var lastAuto = false
+        /** Código y hora de la última pista: si pides otra sin cambiar nada, primero se te pide un intento. */
+        @Volatile var textAtLastHint: String? = null
+        @Volatile var lastHintAt = 0L
+        /** Aviso para el panel y la pista en gris, por ejemplo «intenta algo antes de otra pista». */
+        @Volatile var notice: String? = null
     }
 
     interface Listener {
@@ -143,6 +150,25 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         return last.level.next
     }
 
+    /** La pista en gris está visible en este archivo. */
+    fun isGhostVisible(file: VirtualFile): Boolean {
+        if (!CoachSettings.getInstance().state.ghostHints) return false
+        val s = hintSessions[file.url] ?: return false
+        return s.showInEditor && s.hints.isNotEmpty() && s.marker?.isValid == true
+    }
+
+    /** Tab pide la siguiente pista solo si la pista en gris está en la línea del cursor y el cursor está al final del código de esa línea. */
+    fun ghostAcceptsTab(editor: com.intellij.openapi.editor.Editor, file: VirtualFile): Boolean {
+        if (!isGhostVisible(file) || nextHintLevel(file) == null || isHintBusy(file)) return false
+        val marker = hintSessions[file.url]?.marker ?: return false
+        val doc = editor.document
+        val caret = editor.caretModel.offset
+        val line = doc.getLineNumber(caret)
+        if (line != doc.getLineNumber(marker.startOffset)) return false
+        val after = doc.charsSequence.subSequence(caret, doc.getLineEndOffset(line))
+        return after.isBlank()
+    }
+
     fun addListener(parent: Disposable, l: Listener) {
         listeners += l
         Disposer.register(parent) { listeners -= l }
@@ -168,7 +194,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val doc = FileDocumentManager.getInstance().getCachedDocument(file) ?: return emptyList()
         val out = LinkedHashSet<IdeProblem>()
         runCatching {
-            runReadAction {
+            ReadAction.run<RuntimeException> {
                 DaemonCodeAnalyzerEx.processHighlights(doc, project, HighlightSeverity.ERROR, 0, doc.textLength) { info ->
                     val msg = info.description
                     if (!msg.isNullOrBlank() && info.startOffset <= doc.textLength) {
@@ -291,8 +317,18 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             if (hint != null && hintMarker != null) {
                 val line = doc.getLineNumber(hintMarker.startOffset)
                 val label = "Pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}"
-                val renderer = TutorInlayRenderer(editor, line, CommentType.PREGUNTA, hint.text, label) { false }
-                editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 1, renderer)?.let(created::add)
+                val text = session.notice ?: hint.text
+                val ghostOn = CoachSettings.getInstance().state.ghostHints
+                if (ghostOn) {
+                    // Como la sugerencia de un autocompletado, pero con una pregunta en vez de código.
+                    val keys = if (nextHintLevel(file) != null) "⇥ otra pista · esc" else "esc ocultar"
+                    editor.inlayModel.addAfterLineEndElement(doc.getLineEndOffset(line), true, GhostHintRenderer(text, keys))?.let(created::add)
+                }
+                // Si no cabe en una línea, el texto completo va debajo.
+                if (!ghostOn || text.length > GhostHintRenderer.MAX) {
+                    val renderer = TutorInlayRenderer(editor, line, CommentType.PREGUNTA, text, label) { false }
+                    editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 1, renderer)?.let(created::add)
+                }
             }
         }
         inlays[url] = created
@@ -307,22 +343,33 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
      * Pide el siguiente escalón de la escalera de pistas para el archivo. Si el modelo devuelve código del ejercicio,
      * se le pide una vez que lo reescriba; si insiste, ese fragmento se oculta. Llamar desde el hilo de UI.
      */
-    fun requestHint(file: VirtualFile, auto: Boolean = false) {
+    fun requestHint(file: VirtualFile, auto: Boolean = false, force: Boolean = false) {
         val document = FileDocumentManager.getInstance().getDocument(file) ?: return
         val text = document.text
         val url = file.url
         if (text.isBlank() || hintJobs.containsKey(url)) return
         val problems = ideProblems(file)
         val session = hintSessions.getOrPut(url) { HintSession() }
-        if (session.hints.isNotEmpty() && session.problemsAtLastHint > 0 && problems.isEmpty()) resetLadder(session)
+        if (session.hints.isNotEmpty() && session.problemsAtLastHint > 0 && problems.isEmpty()) resolveSession(session)
         val previous = session.hints.toList()
         val level = previous.lastOrNull()?.let { it.level.next ?: return } ?: HintLevel.QUESTION
+        // Abuso de ayuda: pedir pistas seguidas sin intentar nada. Primero se pide un intento.
+        if (!auto && !force && HelpPolicy.shouldNudge(session.textAtLastHint, text, session.lastHintAt, System.currentTimeMillis())) {
+            session.notice = "Intenta algo con la pista anterior, aunque esté mal: equivocarse también enseña."
+            session.showInEditor = true
+            refreshInlays(file)
+            fire()
+            return
+        }
+        session.notice = null
         session.error = null
         session.showInEditor = true
         val focus = caretLine(file)
         val lineCount = document.lineCount
         val settings = CoachSettings.getInstance()
         val options = settings.promptOptions()
+        val goal = ProjectContext.getInstance(project).goal()
+        val mastered = LearnerProfile.getInstance().mastered()
         val job = cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
             try {
@@ -330,7 +377,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val usage = UsageTracker.getInstance()
                 val system = HintPrompts.hintSystem(options, level)
-                val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level)
+                val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level, goal, mastered)
                 val fallbackLine = focus ?: problems.firstOrNull()?.line ?: 1
                 var reply = client.complete(system, listOf(ChatMessage("user", user)), 500).await()
                 usage.record(UsageKind.HINT, file.name, reply.usage, system + user, reply.text, reply.limits)
@@ -346,6 +393,10 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                     session.hints += hint
                     session.problemsAtLastHint = problems.size
                     session.lastAuto = auto
+                    session.textAtLastHint = text
+                    session.lastHintAt = System.currentTimeMillis()
+                    // Si necesitaste llegar a la herramienta, es un concepto que conviene repasar en unos días.
+                    if (level >= HintLevel.TOOL) hint.concept?.let { LearnerProfile.getInstance().addReview(it) }
                     session.marker?.dispose()
                     val line = (hint.line - 1).coerceIn(0, (document.lineCount - 1).coerceAtLeast(0))
                     session.marker = document.createRangeMarker(document.getLineStartOffset(line), document.getLineEndOffset(line))
@@ -372,9 +423,22 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         session.hints.clear()
         session.giveUp = null
         session.error = null
+        session.notice = null
+        session.textAtLastHint = null
         session.problemsAtLastHint = 0
         session.marker?.dispose()
         session.marker = null
+    }
+
+    /**
+     * Resolviste el problema de la escalera (los errores llegaron a cero): cuenta para el dominio de sus conceptos,
+     * así la ayuda se retira en lo que ya sabes. Si te rendiste, no cuenta como resuelto con poca ayuda.
+     */
+    private fun resolveSession(session: HintSession) {
+        val hints = session.hints.toList()
+        val used = if (session.giveUp != null) HintLevel.entries.size + 1 else hints.size
+        hints.mapNotNull { it.concept }.distinctBy { Mastery.key(it) }.forEach { LearnerProfile.getInstance().recordSolved(it, used) }
+        resetLadder(session)
     }
 
     /** «Nuevo problema»: empieza la escalera desde la primera pista. */
@@ -416,6 +480,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val reply = client.complete(system, listOf(ChatMessage("user", user)), 1200).await()
                 UsageTracker.getInstance().record(UsageKind.GIVE_UP, file.name, reply.usage, system + user, reply.text, reply.limits)
                 session.giveUp = reply.text.trim()
+                // Lo que te hizo rendirte es lo primero que conviene repasar.
+                hints.mapNotNull { it.concept }.forEach { LearnerProfile.getInstance().addReview(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -551,6 +617,12 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             }
             fire()
             return
+        }
+
+        // Sin errores después de haber recibido pistas: lo resolviste. Cuenta para el dominio y la escalera se reinicia.
+        hintSessions[url]?.takeIf { it.hints.isNotEmpty() && it.problemsAtLastHint > 0 }?.let {
+            resolveSession(it)
+            refreshInlays(file)
         }
 
         val last = maxOf(reviews[url]?.at ?: 0L, lastAttempt[url] ?: 0L)
