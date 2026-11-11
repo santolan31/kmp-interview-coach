@@ -30,6 +30,8 @@
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachLocalAnnotator"/>
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachAiAnnotator"/>
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.UnderstandingAnnotator"/>
+        <!-- Guía de pasos: barra sobre el editor con el paso que te dio la IA en Claude Code. -->
+        <editorNotificationProvider implementation="dev.kmpcoach.ide.StepGuideNotifications"/>
         <!-- Pista en gris: Tab pide la siguiente y Esc la oculta; si no hay pista, Tab y Esc funcionan como siempre. -->
         <editorActionHandler action="EditorTab" implementationClass="dev.kmpcoach.ide.GhostTabHandler" order="first"/>
         <editorActionHandler action="EditorEscape" implementationClass="dev.kmpcoach.ide.GhostEscapeHandler" order="first"/>

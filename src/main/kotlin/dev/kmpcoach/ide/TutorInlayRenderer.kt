@@ -36,6 +36,8 @@ class TutorInlayRenderer(
     private val replies: List<ChatMessage> = emptyList(),
     /** El tutor está pensando su respuesta. */
     private val busy: Boolean = false,
+    /** Es el bloque de la pista: un clic sobre él pide la siguiente. */
+    val isHint: Boolean = false,
     private val isStale: () -> Boolean,
 ) : EditorCustomElementRenderer {
 

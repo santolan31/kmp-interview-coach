@@ -17,6 +17,7 @@ class CoachStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
         TutorService.getInstance(project).start()
         ProjectContext.getInstance(project).start()
+        StepGuideService.getInstance(project).start()
         withContext(Dispatchers.EDT) { LearningService.getInstance(project).offerDailyReview() }
     }
 }

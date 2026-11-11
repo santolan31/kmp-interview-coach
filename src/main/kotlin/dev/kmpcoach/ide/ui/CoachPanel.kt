@@ -58,6 +58,8 @@ import dev.kmpcoach.core.Severity
 import dev.kmpcoach.core.UsageKind
 import dev.kmpcoach.core.UsageMath
 import dev.kmpcoach.core.UsageStats
+import com.intellij.openapi.application.ApplicationManager
+import dev.kmpcoach.ide.AiSessionContext
 import dev.kmpcoach.ide.ChallengeFiles
 import dev.kmpcoach.ide.ChallengeRepository
 import dev.kmpcoach.ide.CoachConfigurable
@@ -197,6 +199,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         ProjectContext.getInstance(project).addListener(this) { scheduleRefresh() }
         LearningService.getInstance(project).addListener(this) { scheduleRefresh() }
         LearnerProfile.getInstance().addListener(this) { scheduleRefresh() }
+        AiSessionContext.getInstance(project).addListener(this) { ApplicationManager.getApplication().invokeLater { scheduleRefresh() } }
         if (settings.preset == ProviderPreset.OPENROUTER) tutor.refreshBalance()
         val bus = project.messageBus.connect(this)
         bus.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
@@ -504,6 +507,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         val h = StringBuilder("<html><body>")
         val session = tutor.hintSession(file)
         val working = tutor.isBusy(file) || tutor.isHintBusy(file) || tutor.isGiveUpBusy(file) || tutor.isChatBusy(file)
+        sessionLine(h, file)
         if (entries.isEmpty() && !working) guide(h, file)
 
         val totalHints = session?.hints?.size ?: 0
@@ -555,6 +559,36 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         if (links.isNotEmpty()) h.append("<div style='color:$muted'>${links.joinToString(" · ")}</div>")
         h.append("</body></html>")
         return h.toString()
+    }
+
+    /** Qué conversación con Claude Code está leyendo el tutor para saber en qué paso vas. Solo con el tutor encendido. */
+    private fun sessionLine(h: StringBuilder, file: VirtualFile?) {
+        if (file == null || !tutor.isTutorOn(file) || !settings.state.readAiSession) return
+        val found = AiSessionContext.getInstance(project).peek(file.name)
+        val text = if (found == null) {
+            "Contexto: no encontré una conversación reciente de Claude Code en este proyecto. <a href='session'>elegir</a>"
+        } else {
+            "Contexto: «${esc(found.lastRequest ?: "conversación sin pedidos")}» · " +
+                (if (found.automatic) "elegida sola" else "elegida por ti") + " · <a href='session'>cambiar</a>"
+        }
+        h.append("<div style='color:$muted;margin-bottom:10px'>$text</div>")
+    }
+
+    private fun chooseSession() {
+        val ctx = AiSessionContext.getInstance(project)
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val items = ctx.candidates().map { it to ctx.label(it) }
+            ApplicationManager.getApplication().invokeLater {
+                if (project.isDisposed) return@invokeLater
+                val auto = "Automática: la más reciente que habla de este archivo"
+                val options = listOf(auto) + items.map { it.second }
+                JBPopupFactory.getInstance().createPopupChooserBuilder(options)
+                    .setTitle("Conversación que lee el tutor")
+                    .setItemChosenCallback { c -> ctx.choose(if (c == auto) null else items.firstOrNull { it.second == c }?.first) }
+                    .createPopup()
+                    .showCenteredInCurrentWindow(project)
+            }
+        }
     }
 
     /** Conversación vacía: cómo se usa, en tres gestos. Se puede cerrar. */
@@ -940,6 +974,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             desc.startsWith("reply:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("reply:"))?.let { tutor.replyTo(f, it) } }
             desc.startsWith("resolve:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("resolve:"))?.let { tutor.resolveComment(f, it) } }
             desc == "guideok" -> { settings.state.guideDismissed = true; scheduleRefresh() }
+            desc == "session" -> chooseSession()
             desc == "review" -> reviewNow()
             desc == "solution" -> challenge?.let { ChallengeFiles.openSolution(project, it) }
             desc == "restart" -> if (file != null && challenge != null) restart(file, challenge)

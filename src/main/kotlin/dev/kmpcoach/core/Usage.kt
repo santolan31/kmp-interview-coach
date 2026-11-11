@@ -12,7 +12,8 @@ enum class UsageKind(val id: String, val label: String) {
     GIVE_UP("giveup", "Me rindo"),
     EXPLAIN("explain", "Explícame esto"),
     COMPREHENSION("comprehension", "Comprensión de código nuevo"),
-    SPACED("spaced", "Repaso");
+    SPACED("spaced", "Repaso"),
+    STEP("step", "Comprobar paso");
 
     companion object {
         fun of(id: String?) = entries.firstOrNull { it.id == id }

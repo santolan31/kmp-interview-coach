@@ -107,7 +107,15 @@ El panel **KMP Coach** (barra lateral derecha) tiene tres pestañas: **Tutor** (
    - Apagado, no hace nada solo y quita del editor lo que había; la conversación se conserva en el panel.
 2. **Pide lo que quieras, encendido o no.** **Dame una pista** (⌘⌥⇧J / Ctrl+Alt+Mayús+J) y **Revisar archivo** (⌘⌥⇧K / Ctrl+Alt+Mayús+K). Mientras llega la respuesta, la línea muestra «pensando…».
 3. **Responde a un comentario, ahí mismo.** Haz clic en el comentario bajo la línea (o en **Responder** en el panel): se abre una ventanita pegada a él (Enter envía, Mayús+Enter salta de línea, Esc cierra). El tutor evalúa tu respuesta y contesta debajo del mismo comentario; otro clic sigue la conversación. **Resolver** lo quita del editor.
-4. **Pregunta.** Escribe en la caja, o usa **KMP Coach › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
+4. **Sigue los pasos de tu IA.** Si trabajas con Claude Code en este proyecto, el tutor encendido lee el último mensaje con pasos (`## Paso 5.1 …` con un enlace al archivo antes de cada `diff`) y muestra una barra sobre el editor:
+   - en qué paso vas y cómo van sus `TODO` (✓ hecho, ○ pendiente, ? sin esqueleto);
+   - **Poner el esqueleto**: escribe solo los comentarios `TODO` y los `TODO()` del paso en su sitio (nunca la solución; se deshace con ⌘Z);
+   - **Ir al siguiente TODO**: abre el archivo y deja el cursor donde va el código, aunque el archivo haya cambiado;
+   - **¿Cumple el paso?**: el tutor compara tu código con el paso (una llamada corta);
+   - **Avanzar al paso siguiente**: cuando no quedan `TODO`, compila y lo que el paso reemplazaba ya no está, abre el archivo del siguiente paso con el tutor encendido.
+
+   También le pasa a la revisión, las pistas y el chat un extracto del paso actual, para que juzguen solo eso. Se desactiva en **Ajustes › Aprendizaje**.
+5. **Pregunta.** Escribe en la caja, o usa **KMP Coach › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
 5. **Retos.** En la pestaña Progreso elige nivel y reto, y pulsa **Abrir**. Se crea un archivo de borrador `coach_<id>.kt` que empieza con `// coach:<id>`; esa línea le dice al plugin qué reto estás resolviendo. Los objetivos se marcan solos mientras escribes.
 
 El análisis local y el tutor también funcionan en **cualquier archivo Kotlin de tu proyecto**, no solo en los retos. Puedes desactivarlo para archivos que no sean retos en los ajustes.

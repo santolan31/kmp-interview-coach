@@ -237,10 +237,20 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(object : EditorMouseListener {
             override fun mouseClicked(event: EditorMouseEvent) {
                 if (event.editor.project != project) return
-                val comment = (event.inlay?.renderer as? TutorInlayRenderer)?.comment ?: return
+                val renderer = event.inlay?.renderer as? TutorInlayRenderer ?: return
                 val file = FileDocumentManager.getInstance().getFile(event.editor.document) ?: return
-                event.consume()
-                replyTo(file, comment, RelativePoint(event.mouseEvent))
+                val comment = renderer.comment
+                when {
+                    comment != null -> {
+                        event.consume()
+                        replyTo(file, comment, RelativePoint(event.mouseEvent))
+                    }
+                    // Clic sobre el bloque de la pista: la siguiente, sin mover el cursor.
+                    renderer.isHint && nextHintLevel(file) != null && !isHintBusy(file) -> {
+                        event.consume()
+                        requestHint(file)
+                    }
+                }
             }
         }, this)
     }
@@ -251,7 +261,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
      * revisión si no la hay) y después solo una pista cuando te atascas. Apagado: no hace nada por su cuenta y quita
      * del editor lo que había; la conversación se conserva en el panel. Llamar desde el hilo de UI.
      */
-    fun setTutorOn(file: VirtualFile, on: Boolean) {
+    fun setTutorOn(file: VirtualFile, on: Boolean, withFirstHelp: Boolean = true) {
         val url = file.url
         if (on) {
             if (!tutorOn.add(url)) return
@@ -259,7 +269,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             hintSessions[url]?.let { if (it.hints.isNotEmpty()) it.showInEditor = true }
             refreshInlays(file)
             restartHighlighting(file)
-            firstHelp(file)
+            // Al llegar a un archivo desde la guía de pasos no hace falta gastar una llamada: ya sabes qué hacer.
+            if (withFirstHelp) firstHelp(file)
         } else {
             if (!tutorOn.remove(url)) return
             liveJobs.remove(url)?.cancel()
@@ -286,6 +297,15 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         } else if (reviews[url] == null && !isBusy(file)) {
             requestReview(file)
         }
+    }
+
+    /**
+     * Extracto de tu conversación con Claude Code sobre este archivo, solo si encendiste el tutor en él.
+     * Lee disco: se llama dentro de las corrutinas, en un hilo de E/S.
+     */
+    private suspend fun sessionFor(file: VirtualFile?): String? {
+        if (file == null || !isTutorOn(file)) return null
+        return withContext(Dispatchers.IO) { runCatching { AiSessionContext.getInstance(project).find(file.name)?.excerpt }.getOrNull() }
     }
 
     private fun setPending(file: VirtualFile, document: Document, line: Int, text: String) {
@@ -353,7 +373,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val analysis = Analyzer.analyze(text, challenge, lexical = false)
                 val system = Prompts.reviewSystem(options)
-                val user = Prompts.reviewUser(challenge, text, analysis, file.name)
+                val user = Prompts.reviewUser(challenge, text, analysis, file.name, sessionFor(file))
                 val reply = client.complete(system, listOf(ChatMessage("user", user)), 1800).await()
                 val usage = UsageTracker.getInstance()
                 usage.record(if (auto) UsageKind.LIVE else UsageKind.REVIEW, file.name, reply.usage, system + user, reply.text, reply.limits)
@@ -448,17 +468,15 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val line = doc.getLineNumber(hintMarker.startOffset)
                 val label = "Pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}"
                 val text = session.notice ?: hint.text
-                val ghostOn = CoachSettings.getInstance().state.ghostHints
-                if (ghostOn) {
-                    // Como la sugerencia de un autocompletado, pero con una pregunta en vez de código.
-                    val keys = if (nextHintLevel(file) != null) "⇥ otra pista · esc" else "esc ocultar"
-                    editor.inlayModel.addAfterLineEndElement(doc.getLineEndOffset(line), true, GhostHintRenderer(text, keys))?.let(created::add)
+                // Un solo bloque bajo la línea, con el texto completo y cómo pedir la siguiente.
+                val keysOn = CoachSettings.getInstance().state.ghostHints
+                val footer = when {
+                    nextHintLevel(file) == null -> if (keysOn) "Esc: ocultar · ya no quedan pistas: prueba o rínde en el panel" else "Ya no quedan pistas"
+                    keysOn -> "Clic aquí o Tab al final de la línea: otra pista · Esc: ocultar"
+                    else -> "Clic aquí: otra pista"
                 }
-                // Si no cabe en una línea, el texto completo va debajo.
-                if (!ghostOn || text.length > GhostHintRenderer.MAX) {
-                    val renderer = TutorInlayRenderer(editor, line, CommentType.PREGUNTA, text, label) { false }
-                    editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 1, renderer)?.let(created::add)
-                }
+                val renderer = TutorInlayRenderer(editor, line, CommentType.PREGUNTA, text, label, footer = footer, isHint = true) { false }
+                editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 1, renderer)?.let(created::add)
             }
         }
         inlays[url] = created
@@ -509,7 +527,9 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val usage = UsageTracker.getInstance()
                 val system = HintPrompts.hintSystem(options, level)
-                val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level, goal, mastered)
+                val fullGoal = listOfNotNull(goal, sessionFor(file)?.let { "Extracto de su conversación con la IA que lo guía paso a paso:\n$it" })
+                    .joinToString("\n").ifBlank { null }
+                val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level, fullGoal, mastered)
                 val fallbackLine = focus ?: problems.firstOrNull()?.line ?: 1
                 var reply = client.complete(system, listOf(ChatMessage("user", user)), 500).await()
                 usage.record(UsageKind.HINT, file.name, reply.usage, system + user, reply.text, reply.limits)
@@ -812,7 +832,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val analysis = Analyzer.analyze(text, challenge, lexical = false)
-                val system = Prompts.chatSystem(options, challenge, text, analysis, file.name)
+                val system = Prompts.chatSystem(options, challenge, text, analysis, file.name, sessionFor(file))
                 val reply = client.complete(system, messages, 500).await()
                 UsageTracker.getInstance().record(UsageKind.CHAT, file.name, reply.usage, system + messages.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()
@@ -861,7 +881,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val analysis = if (text.isBlank()) null else Analyzer.analyze(text, challenge, lexical = false)
-                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.name)
+                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.name, sessionFor(file))
                 val reply = client.complete(system, snapshot, 900).await()
                 UsageTracker.getInstance().record(UsageKind.CHAT, file?.name, reply.usage, system + snapshot.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()

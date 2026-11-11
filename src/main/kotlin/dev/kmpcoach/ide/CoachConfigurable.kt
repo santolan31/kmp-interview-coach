@@ -140,7 +140,12 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
         }
         group("Aprendizaje") {
             row {
-                checkBox("Pista en gris al final de la línea (Tab: otra pista · Esc: ocultar)")
+                checkBox("Leer mi conversación de Claude Code de este proyecto para saber en qué paso voy")
+                    .bindSelected({ settings.state.readAiSession }, { settings.state.readAiSession = it })
+            }.rowComment("Solo con el tutor encendido en el archivo. Lee el final de la sesión más reciente que habla de ese archivo " +
+                "(~/.claude/projects) y envía a tu proveedor un extracto del último paso, no la conversación entera.")
+            row {
+                checkBox("Atajos de la pista: Tab pide otra y Esc la oculta")
                     .bindSelected({ settings.state.ghostHints }, { settings.state.ghostHints = it })
             }
             row {

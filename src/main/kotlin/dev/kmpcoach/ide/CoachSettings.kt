@@ -33,9 +33,11 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
         var liveDelayMs by property(2500)
         /** Con el tutor encendido, con errores o código incompleto: segundos sin avanzar antes de que te dé una pista. */
         var stuckAfterSec by property(45)
+        /** Con el tutor encendido, leer tu conversación más reciente de Claude Code en este proyecto para saber en qué paso vas. */
+        var readAiSession by property(true)
         /** Ya cerraste la guía de primer uso del panel. */
         var guideDismissed by property(false)
-        /** Muestra la última pista en gris al final de la línea; Tab pide la siguiente y Esc la oculta. */
+        /** Atajos de la pista bajo la línea: Tab pide la siguiente y Esc la oculta. */
         var ghostHints by property(true)
         /** Antes de ver el resultado de los tests, pregunta qué crees que pasará. */
         var predictTests by property(true)
