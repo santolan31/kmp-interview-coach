@@ -73,6 +73,7 @@ import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.event.ActionEvent
+import java.awt.event.HierarchyEvent
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.net.URLDecoder
@@ -142,8 +143,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val statusLabel = JBLabel()
     private val tutorSwitch = OnOffButton()
     private val input = JBTextArea(3, 20)
-    private val replyLabel = JBLabel()
-    private val replyRow = JPanel(BorderLayout())
     private val hintLink = ActionLink("Dame una pista") { currentKotlin()?.let(tutor::requestHint) }
     private val reviewLink = ActionLink("Revisar archivo") { reviewNow() }
     private val giveUpLink = ActionLink("Me rindo") { currentKotlin()?.let(::giveUpDialog) }
@@ -165,9 +164,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private var syncing = false
     private var showGuessCompare = false
 
-    /** Comentario de la revisión al que estás respondiendo: lo siguiente que envíes va para él. */
-    private var replying: Pair<VirtualFile, TutorService.LiveComment>? = null
-
     /** Último HTML de cada vista: si no cambió no se vuelve a pintar, para no perder la selección ni mover el scroll. */
     private val shown = HashMap<JEditorPane, String>()
     private var feedSignature = ""
@@ -182,17 +178,20 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         tabs.addTab("Progreso", progressTab())
         tabs.addTab("Consumo", usageScroll)
         setContent(tabs)
+        // Al cambiar de pestaña, o al abrir el panel, se calcula solo lo que se va a ver.
+        tabs.addChangeListener { refresh() }
+        addHierarchyListener { e ->
+            if ((e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong()) != 0L && isShowing) refresh()
+        }
 
         tutor.addListener(this, object : TutorService.Listener {
             override fun changed() = scheduleRefresh()
             override fun prefill(text: String) {
-                setReplying(null)
                 tabs.selectedIndex = 0
                 input.text = text
                 input.requestFocusInWindow()
                 input.caretPosition = text.length
             }
-            override fun reply(file: VirtualFile, comment: TutorService.LiveComment) = setReplying(file to comment)
         })
         usage.addListener(this) { scheduleRefresh() }
         ProjectContext.getInstance(project).addListener(this) { scheduleRefresh() }
@@ -291,12 +290,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             add(actions, BorderLayout.SOUTH)
         }
 
-        replyRow.isOpaque = false
-        replyRow.border = JBUI.Borders.empty(0, 6, 6, 6)
-        replyRow.add(replyLabel, BorderLayout.CENTER)
-        replyRow.add(ActionLink("Cancelar") { setReplying(null) }, BorderLayout.EAST)
-        replyRow.isVisible = false
-
         modelLink.toolTipText = "Modelo de IA que responde. Pulsa para cambiarlo."
         val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
             isOpaque = false
@@ -305,7 +298,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         }
         val composer = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(6, 10, 8, 10)
-            add(replyRow, BorderLayout.NORTH)
             add(box, BorderLayout.CENTER)
             add(footer, BorderLayout.SOUTH)
         }
@@ -354,6 +346,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     }
 
     private fun scheduleRefresh() {
+        if (!isShowing) return
         alarm.cancelAllRequests()
         alarm.addRequest({ refresh() }, 200)
     }
@@ -369,32 +362,12 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         if (q.isEmpty()) return
         val file = currentKotlin()
         if (tutor.isChatBusy(file)) return
-        val r = replying
         input.text = ""
-        if (r != null && r.first == file) {
-            setReplying(null)
-            tutor.answerComment(r.first, r.second, q)
-        } else {
-            tutor.ask(file, q)
-        }
-    }
-
-    private fun setReplying(target: Pair<VirtualFile, TutorService.LiveComment>?) {
-        replying = target
-        replyRow.isVisible = target != null
-        if (target != null) {
-            val (file, c) = target
-            val line = lineOf(file, c)
-            val quote = c.message.replace("`", "").let { if (it.length > 90) it.take(87) + "…" else it }
-            replyLabel.text = "<html>↩ Respondiendo a <b>L${line + 1} · ${c.type.label}</b>: «${esc(quote)}»</html>"
-            tabs.selectedIndex = 0
-            input.requestFocusInWindow()
-        }
-        replyRow.revalidate()
+        tutor.ask(file, q)
     }
 
     private fun lineOf(file: VirtualFile, c: TutorService.LiveComment): Int =
-        if (c.marker.isValid) FileDocumentManager.getInstance().getDocument(file)?.getLineNumber(c.marker.startOffset) ?: 0 else 0
+        if (c.marker.isValid) TutorService.documentOf(file)?.getLineNumber(c.marker.startOffset) ?: 0 else 0
 
     private fun shortcut(actionId: String): String = KeymapUtil.getFirstKeyboardShortcutText(actionId)
     private fun shortcutNote(actionId: String): String = shortcut(actionId).let { if (it.isEmpty()) "" else " ($it)" }
@@ -447,15 +420,25 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     }
 
     private fun refresh() {
-        if (project.isDisposed) return
+        // Con el panel cerrado no se calcula nada, y con él abierto solo la pestaña que se ve: así no pesa mientras escribes.
+        if (project.isDisposed || !isShowing) return
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
         val file = editor?.virtualFile?.takeIf { TutorService.isKotlin(it) }
-        val text = if (file != null) editor.document.text else ""
-        val challenge = if (file != null) repo.challengeFor(text) else null
-        syncSelection(challenge)
-        if (replying != null && replying?.first != file) setReplying(null)
-        refreshControls(file)
+        when (tabs.selectedIndex) {
+            0 -> refreshFeed(file)
+            1 -> {
+                val text = if (file != null) editor.document.text else ""
+                val challenge = if (file != null) repo.challengeFor(text) else null
+                syncSelection(challenge)
+                val analysis = if (file != null) Analyzer.analyze(text, challenge, lexical = false) else null
+                show(progress, progressScroll, progressHtml(file, text, challenge, analysis))
+            }
+            else -> show(usagePane, usageScroll, usageHtml())
+        }
+    }
 
+    private fun refreshFeed(file: VirtualFile?) {
+        refreshControls(file)
         val entries = tutor.timeline(file)
         val session = tutor.hintSession(file)
         // Si llegó algo nuevo a la conversación, baja hasta el final; si no, respeta donde estabas leyendo.
@@ -465,10 +448,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         ).joinToString("|")
         show(feed, feedScroll, feedHtml(file, entries), toBottom = signature != feedSignature)
         feedSignature = signature
-
-        val analysis = if (file != null) Analyzer.analyze(text, challenge, lexical = false) else null
-        show(progress, progressScroll, progressHtml(file, text, challenge, analysis))
-        show(usagePane, usageScroll, usageHtml())
     }
 
     private fun refreshControls(file: VirtualFile?) {
@@ -602,7 +581,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         body.append("<b>2. Pide lo que quieras, encendido o no.</b> <a href='hint'>Dame una pista</a>").append(shortcutNote("KmpCoach.Hint"))
         body.append(" te guía sin darte la solución. <a href='review'>Revisar archivo</a>").append(shortcutNote("KmpCoach.ReviewNow"))
         body.append(" deja comentarios bajo las líneas, y no cambian hasta que tú pidas actualizarlos.<br><br>")
-        body.append("<b>3. Responde.</b> Haz clic en un comentario del editor, o en «Responder» aquí, y escribe abajo. El tutor te dice si vas bien.<br><br>")
+        body.append("<b>3. Responde ahí mismo.</b> Haz clic en un comentario del editor: se abre una ventanita pegada a él. " +
+            "El tutor te contesta debajo del comentario y puedes seguir la conversación.<br><br>")
         body.append("<a href='guideok'>Entendido, ocultar esta guía</a>")
         h.append(entry(card(info, body.toString())))
     }
@@ -616,10 +596,18 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         fr.comments.forEach { c ->
             val line = lineOf(file, c)
             val body = StringBuilder("<a href='line:$line'>L${line + 1}</a> <b style='color:${typeColor(c.type)}'>${c.type.label}</b><br>${md(c.message)}")
+            c.thread.forEach { m ->
+                body.append("<br>")
+                if (m.role == "user") body.append("<b>Tú:</b> ") else body.append("<b style='color:$info'>Tutor:</b> ")
+                body.append(md(m.content))
+            }
+            if (c.busy) body.append("<br><span style='color:$muted'>Tutor · pensando…</span>")
             when {
-                c.answered -> body.append("<br><span style='color:$ok'>✓ Respondido</span> <span style='color:$muted'>· la respuesta del tutor está más abajo</span>")
-                c.resolved -> body.append("<br><span style='color:$muted'>Descartado</span>")
-                c.type != CommentType.BIEN -> body.append("<br><a href='reply:${c.id}'>Responder</a> · <a href='resolve:${c.id}'>Descartar</a>")
+                c.resolved -> body.append("<br><span style='color:$ok'>✓ Resuelto</span>")
+                c.type != CommentType.BIEN && !c.busy -> {
+                    val reply = if (c.thread.isEmpty()) "Responder" else "Seguir la conversación"
+                    body.append("<br><a href='reply:${c.id}'>$reply</a> · <a href='resolve:${c.id}'>Resolver</a>")
+                }
             }
             b.append(card(typeColor(c.type), body.toString()))
         }
@@ -832,8 +820,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         val e = a.count(Severity.ERROR)
         val w = a.count(Severity.WARN)
         val s = a.count(Severity.INFO)
-        val ms = String.format("%.2f", a.micros / 1000.0)
-        h.append("<p><b>Análisis local</b> <span style='color:$muted'>· sin IA · $ms ms</span><br>")
+        h.append("<p><b>Análisis local</b> <span style='color:$muted'>· sin IA</span><br>")
         if (a.diagnostics.isEmpty()) {
             h.append("<span style='color:$muted'>Sin avisos. Revisa patrones y reglas del reto; los errores de compilación los marca el IDE.</span>")
         } else {
@@ -946,11 +933,11 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun onLink(desc: String) {
         val file = currentFile()
         val kotlin = file?.takeIf { TutorService.isKotlin(it) }
-        val challenge = file?.let { f -> FileDocumentManager.getInstance().getDocument(f)?.let { repo.challengeFor(it.text) } }
+        val challenge = file?.let { f -> TutorService.documentOf(f)?.let { repo.challengeFor(it.text) } }
         when {
             desc.startsWith("line:") -> file?.let { OpenFileDescriptor(project, it, desc.removePrefix("line:").toIntOrNull() ?: 0, 0).navigate(true) }
             desc.startsWith("ask:") -> tutor.ask(kotlin, URLDecoder.decode(desc.removePrefix("ask:"), Charsets.UTF_8))
-            desc.startsWith("reply:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("reply:"))?.let { setReplying(f to it) } }
+            desc.startsWith("reply:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("reply:"))?.let { tutor.replyTo(f, it) } }
             desc.startsWith("resolve:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("resolve:"))?.let { tutor.resolveComment(f, it) } }
             desc == "guideok" -> { settings.state.guideDismissed = true; scheduleRefresh() }
             desc == "review" -> reviewNow()
@@ -1009,7 +996,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun restart(file: VirtualFile, c: Challenge) {
         val answer = Messages.showYesNoDialog(project, "¿Reemplazar tu código por el código inicial del reto?", "Empezar de nuevo", Messages.getQuestionIcon())
         if (answer != Messages.YES) return
-        val doc = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val doc = TutorService.documentOf(file) ?: return
         WriteCommandAction.runWriteCommandAction(project, "Empezar de nuevo", null, { doc.setText(c.header + "\n" + c.starter.trimEnd() + "\n") })
         tutor.clearReview(file)
     }

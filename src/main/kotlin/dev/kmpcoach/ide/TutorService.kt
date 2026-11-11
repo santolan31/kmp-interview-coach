@@ -16,12 +16,14 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.RangeMarker
+import com.intellij.openapi.editor.ScrollType
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
@@ -30,6 +32,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
+import com.intellij.ui.awt.RelativePoint
 import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.ChatMessage
@@ -72,9 +75,11 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
 
     class LiveComment(val marker: RangeMarker, val type: CommentType, val message: String) {
         val id: String = java.util.UUID.randomUUID().toString().take(8)
-        /** Ya lo respondiste o lo descartaste: deja de dibujarse en el editor. */
+        /** Lo diste por resuelto o lo descartaste: deja de dibujarse en el editor. */
         @Volatile var resolved = false
-        @Volatile var answered = false
+        /** Conversación con el tutor sobre este comentario: tu respuesta, su evaluación, tu réplica… Se dibuja bajo el comentario. */
+        val thread = CopyOnWriteArrayList<ChatMessage>()
+        @Volatile var busy = false
     }
 
     /** Una entrada de la conversación del panel, en orden de llegada: revisión, pista, solución explicada o mensaje del chat. */
@@ -123,8 +128,6 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     interface Listener {
         fun changed() {}
         fun prefill(text: String) {}
-        /** El estudiante quiere responder a este comentario de la revisión. */
-        fun reply(file: VirtualFile, comment: LiveComment) {}
     }
 
     private val reviews = ConcurrentHashMap<String, FileReview>()
@@ -230,14 +233,14 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) = onDocumentChanged(event.document)
         }, this)
-        // Clic sobre un comentario del tutor en el editor: abre la respuesta en el panel.
+        // Clic sobre un comentario del tutor en el editor: abre ahí mismo la ventana para responder.
         EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(object : EditorMouseListener {
             override fun mouseClicked(event: EditorMouseEvent) {
                 if (event.editor.project != project) return
                 val comment = (event.inlay?.renderer as? TutorInlayRenderer)?.comment ?: return
                 val file = FileDocumentManager.getInstance().getFile(event.editor.document) ?: return
                 event.consume()
-                replyTo(file, comment)
+                replyTo(file, comment, RelativePoint(event.mouseEvent))
             }
         }, this)
     }
@@ -271,7 +274,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     }
 
     private fun firstHelp(file: VirtualFile) {
-        val doc = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val doc = documentOf(file) ?: return
         if (doc.text.isBlank()) return
         val url = file.url
         val count = IdeProblems.relevant(ideProblems(file), ScratchUtil.isScratch(file)).size + if (IdeProblems.hasTodo(doc.text)) 1 else 0
@@ -330,7 +333,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     // ---------- revisión ----------
     /** Pide una revisión del archivo. Llamar desde el hilo de UI. */
     fun requestReview(file: VirtualFile, auto: Boolean = false) {
-        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val document = documentOf(file) ?: return
         val text = document.text
         if (text.isBlank()) return
         val url = file.url
@@ -430,8 +433,11 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             comments.forEach { c ->
                 if (!c.marker.isValid) return@forEach
                 val line = doc.getLineNumber(c.marker.startOffset)
-                val footer = if (c.type == CommentType.BIEN) null else "↩ clic para responder"
-                val renderer = TutorInlayRenderer(editor, line, c.type, c.message, comment = c, footer = footer) { fr?.stale == true }
+                val footer = if (c.type == CommentType.BIEN) null else if (c.thread.isEmpty()) "↩ clic para responder" else "↩ clic para seguir la conversación"
+                val renderer = TutorInlayRenderer(
+                    editor, line, c.type, c.message, comment = c,
+                    footer = if (c.busy) null else footer, replies = c.thread.toList(), busy = c.busy,
+                ) { fr?.stale == true }
                 editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 0, renderer)?.let(created::add)
             }
             if (wait != null) {
@@ -459,7 +465,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     }
 
     private fun restartHighlighting(file: VirtualFile) {
-        PsiManager.getInstance(project).findFile(file)?.let { DaemonCodeAnalyzer.getInstance(project).restart(it) }
+        ReadAction.compute<com.intellij.psi.PsiFile?, RuntimeException> { PsiManager.getInstance(project).findFile(file) }
+            ?.let { DaemonCodeAnalyzer.getInstance(project).restart(it) }
     }
 
     // ---------- pistas ----------
@@ -468,7 +475,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
      * se le pide una vez que lo reescriba; si insiste, ese fragmento se oculta. Llamar desde el hilo de UI.
      */
     fun requestHint(file: VirtualFile, auto: Boolean = false, force: Boolean = false) {
-        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val document = documentOf(file) ?: return
         val text = document.text
         val url = file.url
         if (text.isBlank() || hintJobs.containsKey(url)) return
@@ -588,7 +595,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
 
     /** «Me rindo», opción A: el mismo modelo explica la solución línea por línea. */
     fun giveUp(file: VirtualFile) {
-        val document = FileDocumentManager.getInstance().getDocument(file) ?: return
+        val document = documentOf(file) ?: return
         val text = document.text
         val url = file.url
         if (text.isBlank() || giveUpJobs.containsKey(url)) return
@@ -632,7 +639,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
 
     /** «Me rindo», opción B: copia un mensaje listo para pegar en el chat de Claude, con archivo, errores, pistas y código. */
     fun copyHandoff(file: VirtualFile) {
-        val text = FileDocumentManager.getInstance().getDocument(file)?.text ?: return
+        val text = documentOf(file)?.text ?: return
         val hints = hintSessions[file.url]?.hints?.toList().orEmpty()
         val message = HintPrompts.handoff(relativePath(file), text, ideProblems(file), hints, caretLine(file))
         CopyPasteManager.getInstance().setContents(StringSelection(message))
@@ -759,26 +766,71 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     }
 
     // ---------- responder a un comentario ----------
-    /** Abre en el panel la respuesta a un comentario de la revisión. */
-    fun replyTo(file: VirtualFile, comment: LiveComment) {
-        showToolWindow()
-        listeners.forEach { it.reply(file, comment) }
-    }
-
-    /** Envía tu respuesta a un comentario: el tutor la evalúa en el chat y el comentario sale del editor. */
-    fun answerComment(file: VirtualFile, comment: LiveComment, answer: String) {
-        if (answer.isBlank() || isChatBusy(file)) return
-        val line = comment.marker.takeIf { it.isValid }?.let { m ->
-            FileDocumentManager.getInstance().getCachedDocument(file)?.getLineNumber(m.startOffset)?.plus(1)
+    /**
+     * Abre junto al comentario una ventana pequeña para responderlo, sin salir del editor. [at] es el punto del clic; si se
+     * llama desde el panel, el editor se desplaza al comentario y la ventana aparece bajo su línea.
+     */
+    fun replyTo(file: VirtualFile, comment: LiveComment, at: RelativePoint? = null) {
+        if (comment.busy) return
+        val fem = FileEditorManager.getInstance(project)
+        val editor = fem.selectedTextEditor?.takeIf { it.virtualFile == file }
+            ?: fem.openTextEditor(OpenFileDescriptor(project, file), true)
+            ?: return
+        if (at == null && comment.marker.isValid) {
+            editor.caretModel.moveToOffset(comment.marker.startOffset)
+            editor.scrollingModel.disableAnimation()
+            editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+            editor.scrollingModel.enableAnimation()
         }
-        comment.answered = true
-        comment.resolved = true
-        refreshInlays(file)
-        restartHighlighting(file)
-        ask(file, Prompts.replyToComment(line, comment.type, comment.message, answer))
+        InlineReply.show(project, editor, file, comment, at)
     }
 
-    /** Descarta un comentario sin responderlo: sale del editor y queda marcado en el panel. */
+    /**
+     * Envía tu respuesta a un comentario. El tutor la evalúa y su respuesta aparece bajo el mismo comentario, en el editor;
+     * puedes seguir la conversación con otro clic. El comentario no desaparece hasta que lo des por resuelto.
+     */
+    fun replyInline(file: VirtualFile, comment: LiveComment, answer: String) {
+        val q = answer.trim()
+        if (q.isEmpty() || comment.busy) return
+        val doc = documentOf(file) ?: return
+        val text = doc.text
+        val line = comment.marker.takeIf { it.isValid }?.let { doc.getLineNumber(it.startOffset) + 1 }
+        comment.thread += ChatMessage("user", q)
+        comment.busy = true
+        // El primer mensaje cita el comentario para que el tutor sepa a cuál respondes; los demás siguen la conversación.
+        val messages = comment.thread.toList().mapIndexed { i, m ->
+            if (i == 0) ChatMessage("user", Prompts.replyToComment(line, comment.type, comment.message, m.content)) else m
+        }
+        refreshInlays(file)
+        fire()
+        val settings = CoachSettings.getInstance()
+        val options = settings.promptOptions()
+        val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
+        cs.launch {
+            var cfg: dev.kmpcoach.core.AiConfig? = null
+            val answerText = try {
+                val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
+                cfg = c
+                val analysis = Analyzer.analyze(text, challenge, lexical = false)
+                val system = Prompts.chatSystem(options, challenge, text, analysis, file.name)
+                val reply = client.complete(system, messages, 500).await()
+                UsageTracker.getInstance().record(UsageKind.CHAT, file.name, reply.usage, system + messages.joinToString { it.content }, reply.text, reply.limits)
+                reply.text.trim()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                "⚠ " + AiClients.friendly(e, cfg)
+            }
+            withContext(NonCancellable + Dispatchers.EDT) {
+                comment.thread += ChatMessage("assistant", answerText)
+                comment.busy = false
+                refreshInlays(file)
+                fire()
+            }
+        }
+    }
+
+    /** Da un comentario por resuelto (lo hayas respondido o no): sale del editor y queda marcado en el panel. */
     fun resolveComment(file: VirtualFile, comment: LiveComment) {
         comment.resolved = true
         refreshInlays(file)
@@ -793,7 +845,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val q = question.trim()
         val k = key(file)
         if (q.isEmpty() || k in chatBusy) return
-        val text = file?.let { FileDocumentManager.getInstance().getDocument(it)?.text }.orEmpty()
+        val text = file?.let { documentOf(it)?.text }.orEmpty()
         val history = chats.getOrPut(k) { mutableListOf() }
         history += turn("user", q)
         val snapshot = history.takeLast(10).map { it.message }.dropWhile { it.role != "user" }
@@ -882,5 +934,9 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         const val NOTIFICATION_GROUP = "KMP Interview Coach"
         fun getInstance(project: Project): TutorService = project.service()
         fun isKotlin(file: VirtualFile) = file.extension.equals("kt", true)
+
+        /** Documento del archivo. Desde la versión 2026 el hilo de la interfaz ya no tiene permiso de lectura implícito. */
+        fun documentOf(file: VirtualFile): Document? =
+            ReadAction.compute<Document?, RuntimeException> { FileDocumentManager.getInstance().getDocument(file) }
     }
 }

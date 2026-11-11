@@ -106,7 +106,7 @@ El panel **KMP Coach** (barra lateral derecha) tiene tres pestañas: **Tutor** (
    - Nunca reemplaza los comentarios de una revisión por su cuenta. Si cambias el código, el panel te avisa y tú pulsas **Actualizar revisión**.
    - Apagado, no hace nada solo y quita del editor lo que había; la conversación se conserva en el panel.
 2. **Pide lo que quieras, encendido o no.** **Dame una pista** (⌘⌥⇧J / Ctrl+Alt+Mayús+J) y **Revisar archivo** (⌘⌥⇧K / Ctrl+Alt+Mayús+K). Mientras llega la respuesta, la línea muestra «pensando…».
-3. **Responde a un comentario.** Haz clic en el comentario bajo la línea, o en **Responder** en el panel, y escribe en la caja de abajo (Enter envía, Mayús+Enter salta de línea). El tutor evalúa tu respuesta en la conversación y el comentario sale del editor. **Descartar** lo quita sin responder.
+3. **Responde a un comentario, ahí mismo.** Haz clic en el comentario bajo la línea (o en **Responder** en el panel): se abre una ventanita pegada a él (Enter envía, Mayús+Enter salta de línea, Esc cierra). El tutor evalúa tu respuesta y contesta debajo del mismo comentario; otro clic sigue la conversación. **Resolver** lo quita del editor.
 4. **Pregunta.** Escribe en la caja, o usa **KMP Coach › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
 5. **Retos.** En la pestaña Progreso elige nivel y reto, y pulsa **Abrir**. Se crea un archivo de borrador `coach_<id>.kt` que empieza con `// coach:<id>`; esa línea le dice al plugin qué reto estás resolviendo. Los objetivos se marcan solos mientras escribes.
 

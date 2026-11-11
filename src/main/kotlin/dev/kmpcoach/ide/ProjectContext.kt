@@ -92,7 +92,7 @@ class ProjectContext(private val project: Project, private val cs: CoroutineScop
     fun start() {
         project.messageBus.connect(this).subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<VFileEvent>) {
-                if (events.any { e -> e.path.endsWith(".kt") || e.path.endsWith(".kts") || e.path.endsWith(".md") }) scheduleRefresh(2_500)
+                if (events.any { e -> relevantPath(e.path) }) scheduleRefresh(2_500)
             }
         })
         cs.launch {
@@ -102,6 +102,17 @@ class ProjectContext(private val project: Project, private val cs: CoroutineScop
                 delay(120_000)
             }
         }
+    }
+
+    /**
+     * Solo cuentan los `.kt`, `.kts` y `.md` del propio proyecto. Los archivos generados por Gradle, KSP o Room
+     * (`build/`, `.gradle/`) cambian todo el tiempo y no son código que hayas escrito.
+     */
+    private fun relevantPath(path: String): Boolean {
+        if (!(path.endsWith(".kt") || path.endsWith(".kts") || path.endsWith(".md"))) return false
+        val base = basePath ?: return false
+        if (!path.startsWith("$base/")) return false
+        return IGNORED_DIRS.none { path.contains(it) }
     }
 
     fun scheduleRefresh(delayMs: Long = 0) {
@@ -200,12 +211,18 @@ class ProjectContext(private val project: Project, private val cs: CoroutineScop
         val result = withContext(Dispatchers.IO) { computeBlocks(base) }
         withContext(Dispatchers.EDT) {
             if (project.isDisposed) return@withContext
+            val first = refreshedAt == 0L
+            val same = result.first.map(::signature) == blocks.map(::signature) &&
+                result.second == changedPaths && result.third == gitError
             blocks = result.first
             changedPaths = result.second
             gitError = result.third
             refreshedAt = System.currentTimeMillis()
-            restartOpenEditors()
-            fire()
+            // Reiniciar el análisis de todos los editores abiertos es lo más caro de este servicio: solo si algo cambió de verdad.
+            if (first || !same) {
+                restartOpenEditors()
+                fire()
+            }
         }
     }
 
@@ -260,19 +277,34 @@ class ProjectContext(private val project: Project, private val cs: CoroutineScop
     fun allBlocks(): List<CodeBlock> = blocks
     fun pendingBlocks(): List<CodeBlock> = blocks.filter { !isUnderstood(it) && !isIgnored(it) }
 
-    private fun ids(json: String?): Set<String> = runCatching { Json.parse(json ?: "[]").asList().map { it.toString() }.toSet() }.getOrDefault(emptySet())
+    private fun signature(b: CodeBlock) = "${b.path}:${b.startLine}:${b.id}"
 
-    fun isUnderstood(b: CodeBlock) = b.id in ids(state.understood)
-    fun isIgnored(b: CodeBlock) = b.id in ids(state.ignored)
+    /** Conjunto de ids leído de un JSON, recordado mientras el JSON no cambie: se consulta una vez por bloque y por pasada del resaltado. */
+    private class IdSet {
+        @Volatile private var cached: Pair<String?, Set<String>> = Pair("[]", emptySet())
+        fun get(json: String?): Set<String> {
+            val c = cached
+            if (c.first == json) return c.second
+            val parsed = runCatching { Json.parse(json ?: "[]").asList().map { it.toString() }.toSet() }.getOrDefault(emptySet())
+            cached = Pair(json, parsed)
+            return parsed
+        }
+    }
+
+    private val understoodIds = IdSet()
+    private val ignoredIds = IdSet()
+
+    fun isUnderstood(b: CodeBlock) = b.id in understoodIds.get(state.understood)
+    fun isIgnored(b: CodeBlock) = b.id in ignoredIds.get(state.ignored)
 
     fun markUnderstood(b: CodeBlock) {
-        state.understood = Json.write((ids(state.understood) + b.id).toList().takeLast(2000))
+        state.understood = Json.write((understoodIds.get(state.understood) + b.id).toList().takeLast(2000))
         restartOpenEditors()
         fire()
     }
 
     fun markIgnored(b: CodeBlock) {
-        state.ignored = Json.write((ids(state.ignored) + b.id).toList().takeLast(2000))
+        state.ignored = Json.write((ignoredIds.get(state.ignored) + b.id).toList().takeLast(2000))
         restartOpenEditors()
         fire()
     }
@@ -287,6 +319,7 @@ class ProjectContext(private val project: Project, private val cs: CoroutineScop
 
     companion object {
         private const val MAX_BLOCKS = 300
+        private val IGNORED_DIRS = listOf("/build/", "/.gradle/", "/.idea/", "/.git/", "/node_modules/", "/.kotlin/")
         fun getInstance(project: Project): ProjectContext = project.service()
     }
 }
