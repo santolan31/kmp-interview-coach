@@ -102,7 +102,8 @@ class StepGuideTest {
         val untouched = StepMatcher.status(original, edit, hasErrors = false, seenPlaced = false)
         assertTrue(untouched.canPlaceSkeleton)
         assertFalse(untouched.complete)
-        assertEquals(TodoState.UNKNOWN, untouched.todos.single().state)
+        assertEquals("la línea que reemplaza el TODO 1 sigue igual", TodoState.MISSING, untouched.todos.single().state)
+        assertEquals(3, untouched.todos.single().line)
 
         val withSkeleton = apply(original, StepMatcher.placeSkeleton(original, edit)!!)
         assertEquals("    // TODO 1: que el tipo permita null", withSkeleton[3])
@@ -144,9 +145,20 @@ class StepGuideTest {
         val partial = original.map { if (".clickable(" in it) "                .clickable(onClick = onNotificationClick ?: {})" else it }
         val st = StepMatcher.status(partial, edit, hasErrors = false, seenPlaced = false)
         assertFalse(st.complete)
-        assertTrue(st.todos.all { it.state == TodoState.UNKNOWN })
-        val done = partial.map { if ("tint =" in it) "            tint = if (isEnabled) primary else disabled," else it }
-        assertTrue(StepMatcher.status(done, edit, hasErrors = false, seenPlaced = false).complete)
+        assertEquals(
+            listOf("TODO 2" to TodoState.MISSING, "TODO 3" to TodoState.MISSING, "TODO 4" to TodoState.DONE),
+            st.todos.map { it.label to it.state },
+        )
+        assertEquals("el TODO 2 va justo antes de Icon(", 7, st.todos[0].line)
+        assertEquals("el TODO 3 es la línea del tint que sigue igual", 9, st.todos[1].line)
+        assertEquals("«Ir a lo que falta» lleva al primero", 7, st.cursorLine)
+
+        val tintDone = partial.map { if ("tint =" in it) "            tint = if (isEnabled) primary else disabled," else it }
+        assertFalse("falta crear la variable del TODO 2", StepMatcher.status(tintDone, edit, hasErrors = false, seenPlaced = false).complete)
+        val done = tintDone.toMutableList().apply { add(7, "        val isEnabled = onNotificationClick != null") }
+        val all = StepMatcher.status(done, edit, hasErrors = false, seenPlaced = false)
+        assertTrue(all.complete)
+        assertTrue(all.todos.all { it.state == TodoState.DONE })
     }
 
     @Test
@@ -159,7 +171,9 @@ class StepGuideTest {
 
     @Test
     fun parsesTheTutorVerdict() {
-        assertEquals(StepVerdict(true, ""), StepPrompts.parseVerdict("""{"cumple": true, "falta": ""}"""))
-        assertEquals(StepVerdict(false, "falta el color"), StepPrompts.parseVerdict("Claro: {\"cumple\": false, \"falta\": \"falta el color\"}"))
+        assertEquals(StepVerdict(true, emptyList()), StepPrompts.parseVerdict("""{"cumple": true, "faltan": []}"""))
+        val v = StepPrompts.parseVerdict("Claro: {\"cumple\": false, \"faltan\": [{\"archivo\": \"MacoTopBar.kt\", \"linea\": 82, \"que\": \"falta el color\"}]}")
+        assertEquals(StepVerdict(false, listOf(StepGap("MacoTopBar.kt", 82, "falta el color"))), v)
+        assertEquals("respuesta antigua", "falta algo", StepPrompts.parseVerdict("""{"cumple": false, "falta": "falta algo"}""").missing)
     }
 }

@@ -19,6 +19,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.EditorNotifications
 import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.ChatMessage
+import dev.kmpcoach.core.CommentType
 import dev.kmpcoach.core.EditStatus
 import dev.kmpcoach.core.GuideStep
 import dev.kmpcoach.core.IdeProblems
@@ -52,7 +53,11 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
 
     class EditView(val edit: StepEdit, val status: EditStatus, val file: VirtualFile?)
 
+    /** [verdict]: respuesta del tutor a «¿Cumple el paso?», solo si tu código no cambió desde entonces. */
     class StepView(val step: GuideStep, val index: Int, val edits: List<EditView>, val complete: Boolean, val verdict: StepVerdict?)
+
+    /** Marca en el editor sobre una línea (0-based): lo que falta en rojo, o la confirmación del tutor en verde. */
+    class Marker(val line: Int, val type: CommentType, val label: String, val text: String, val stale: Boolean)
 
     class View(val steps: List<GuideStep>, val current: StepView, val next: GuideStep?)
 
@@ -69,6 +74,10 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     /** Respuesta del tutor a «¿Cumple el paso?», con una huella del código: si lo cambias, deja de valer. */
     private val verdicts = ConcurrentHashMap<String, Pair<Int, StepVerdict>>()
     private val verifying = ConcurrentHashMap.newKeySet<String>()
+    /** Pasos donde pulsaste «¿Cumple el paso?»: desde entonces lo que falta se marca en rojo en el código. */
+    private val checked = ConcurrentHashMap.newKeySet<String>()
+    /** Archivos con marcas dibujadas, para quitarlas cuando ya no correspondan. */
+    private val markedFiles = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var viewedId: String? = null
     private var refreshJob: Job? = null
 
@@ -92,8 +101,56 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         refreshJob?.cancel()
         refreshJob = cs.launch {
             delay(400)
-            if (!project.isDisposed) EditorNotifications.getInstance(project).updateAllNotifications()
+            if (project.isDisposed) return@launch
+            EditorNotifications.getInstance(project).updateAllNotifications()
+            withContext(Dispatchers.EDT) { refreshMarkers() }
         }
+    }
+
+    /** Vuelve a dibujar las marcas del paso comprobado, y quita las de archivos que ya no las tienen. */
+    private fun refreshMarkers() {
+        if (project.isDisposed) return
+        val tutor = TutorService.getInstance(project)
+        val fem = FileEditorManager.getInstance(project)
+        val now = fem.openFiles.filter { markersFor(it).isNotEmpty() }.map { it.path }.toSet()
+        (now + markedFiles).forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::refreshInlays) }
+        markedFiles.clear()
+        markedFiles += now
+    }
+
+    /**
+     * Marcas del paso actual en este archivo, después de pulsar «¿Cumple el paso?»: cada TODO que falta (comprobación
+     * gratis) y lo que el tutor dijo que falta, en rojo; o su confirmación, en verde. Hilo de la interfaz.
+     */
+    fun markersFor(file: VirtualFile): List<Marker> {
+        val src = sources[file.name]?.value ?: return emptyList()
+        val steps = steps(src)
+        val idx = steps.indexOfFirst { it.id == viewedId }.takeIf { it >= 0 } ?: return emptyList()
+        val step = steps[idx]
+        if (step.id !in checked || step.edits.none { it.path == file.path }) return emptyList()
+        val lines = HashMap<String, List<String>>()
+        val sv = stepView(steps, idx, lines)
+        val here = sv.edits.filter { it.edit.path == file.path }
+        val out = ArrayList<Marker>()
+        here.forEach { ev ->
+            ev.status.todos.filter { it.missing && it.line != null }.forEach { t ->
+                out += Marker(t.line!!, CommentType.ERROR, "Falta · ${t.label}", t.text, stale = false)
+            }
+        }
+        val stored = verdicts[step.id] ?: return out
+        val stale = stored.first != fingerprint(step, lines)
+        val v = stored.second
+        val fallback = here.firstNotNullOfOrNull { it.status.cursorLine } ?: (here.first().edit.line - 1).coerceAtLeast(0)
+        if (v.ok) {
+            out += Marker(fallback, CommentType.BIEN, "Tutor", "Tu código cumple el ${step.label}.", stale)
+        } else {
+            v.gaps.filter { it.file == null || it.file == file.name }.forEach { g ->
+                val line = g.line?.minus(1) ?: fallback
+                // Si la comprobación gratis ya marcó esa línea, no la repite.
+                if (out.none { it.line == line }) out += Marker(line, CommentType.ERROR, "Falta (tutor)", g.text, stale)
+            }
+        }
+        return out
     }
 
     /** Lo último encontrado para ese archivo; si está viejo, lo busca de nuevo en segundo plano. */
@@ -146,6 +203,7 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
             if (st.skeletonPlaced) seenPlaced += e.key
             EditView(e, st, vf)
         }
+        // La respuesta del tutor vale mientras no cambies el código de los archivos del paso.
         val verdict = verdicts[step.id]?.takeIf { it.first == fingerprint(step, lines) }?.second
         val complete = when {
             step.id in manualDone -> true
@@ -179,10 +237,14 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
 
     // ---------- acciones (hilo de la interfaz) ----------
 
-    /** Abre el archivo del cambio y deja el cursor donde va el código, al inicio del texto de esa línea. */
+    /** Abre el archivo del cambio y deja el cursor en lo primero que falta (o donde va el código). */
     fun goTo(ev: EditView) {
         val vf = ev.file ?: return notify("No encontré ${ev.edit.fileName} en el proyecto.")
-        val line = ev.status.cursorLine ?: (ev.edit.line - 1).coerceAtLeast(0)
+        goToLine(vf, ev.status.cursorLine ?: (ev.edit.line - 1).coerceAtLeast(0))
+    }
+
+    /** Abre el archivo y deja el cursor al inicio del texto de la línea (0-based). */
+    fun goToLine(vf: VirtualFile, line: Int) {
         OpenFileDescriptor(project, vf, line, 0).navigate(true)
         val editor = FileEditorManager.getInstance(project).selectedTextEditor?.takeIf { it.virtualFile == vf } ?: return
         val doc = editor.document
@@ -215,6 +277,7 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     fun advance(view: View) {
         val next = view.next ?: return
         viewedId = next.id
+        refreshMarkers()
         val lines = HashMap<String, List<String>>()
         val nextView = stepView(view.steps, view.current.index + 1, lines)
         val target = nextView.edits.firstOrNull { !it.status.complete } ?: nextView.edits.firstOrNull()
@@ -241,6 +304,8 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     /** «¿Cumple el paso?»: el tutor compara tu código con el paso. Una llamada corta; la respuesta aparece en la barra. */
     fun verify(step: GuideStep) {
         if (!verifying.add(step.id)) return
+        // Desde ahora lo que falta se marca en rojo, también lo que encuentra la comprobación gratis.
+        checked += step.id
         refresh()
         val lines = HashMap<String, List<String>>()
         val files = step.edits.map { it.path }.distinct().map { p -> p.substringAfterLast('/') to lines.getOrPut(p) { linesOf(p, vfOf(p)) }.joinToString("\n") }

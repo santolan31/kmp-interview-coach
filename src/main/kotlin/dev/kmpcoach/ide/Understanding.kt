@@ -62,7 +62,9 @@ class UnderstandingGutter(private val block: CodeBlock, private val startLine: I
     override fun getIcon(): Icon = AllIcons.General.ContextHelp
 
     override fun getTooltipText(): String =
-        "Código nuevo sin comprobar (líneas $startLine–$endLine). Pulsa para comprobar que lo entiendes."
+        "<html><b>KMP Coach · código nuevo sin comprobar</b> (líneas $startLine–$endLine)<br>" +
+            "Este bloque es nuevo según git (lo escribieras tú o una IA). Haz clic para comprobar que entiendes qué hace:<br>" +
+            "predecir su resultado o explicarlo sin mirarlo. Si no hace falta, márcalo y desaparece.</html>"
 
     override fun isNavigateAction(): Boolean = true
 
@@ -80,16 +82,21 @@ class UnderstandingGutter(private val block: CodeBlock, private val startLine: I
         private const val PREDICT = "Predecir qué hace con un ejemplo"
         private const val EXPLAIN = "Explicarlo sin mirarlo (se pliega)"
         private const val IGNORE = "No necesita revisión (generado o configuración)"
+        private const val TURN_OFF = "No mostrar estas marcas (se reactivan en Ajustes › KMP Coach)"
 
         fun showChoices(project: Project, block: CodeBlock, e: AnActionEvent?) {
-            val popup = JBPopupFactory.getInstance().createPopupChooserBuilder(listOf(PREDICT, EXPLAIN, IGNORE))
-                .setTitle("¿Entiendes este bloque? (${block.lineCount} líneas)")
+            val popup = JBPopupFactory.getInstance().createPopupChooserBuilder(listOf(PREDICT, EXPLAIN, IGNORE, TURN_OFF))
+                .setTitle("KMP Coach · ¿Entiendes este código nuevo? (${block.lineCount} líneas)")
                 .setItemChosenCallback { choice ->
                     val learning = LearningService.getInstance(project)
                     when (choice) {
                         PREDICT -> learning.predict(block)
                         EXPLAIN -> learning.explain(block)
                         IGNORE -> ProjectContext.getInstance(project).markIgnored(block)
+                        TURN_OFF -> {
+                            CoachSettings.getInstance().state.trackNewCode = false
+                            com.intellij.codeInsight.daemon.DaemonCodeAnalyzer.getInstance(project).restart()
+                        }
                     }
                 }
                 .createPopup()

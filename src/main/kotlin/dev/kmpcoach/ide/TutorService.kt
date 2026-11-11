@@ -447,9 +447,16 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val hintMarker = session?.marker?.takeIf { it.isValid }
         val wait = pending[url]?.takeIf { it.marker.isValid }
         val comments = commentsInEditor(file)
-        if (comments.isEmpty() && (hint == null || hintMarker == null) && wait == null) return
+        // Lo que falta del paso de la guía (en rojo) o la confirmación del tutor (en verde), tras «¿Cumple el paso?».
+        val stepMarkers = if (isTutorOn(file)) StepGuideService.getInstance(project).markersFor(file) else emptyList()
+        if (comments.isEmpty() && (hint == null || hintMarker == null) && wait == null && stepMarkers.isEmpty()) return
         val created = ArrayList<Inlay<*>>()
         for (editor in EditorFactory.getInstance().getEditors(doc, project)) {
+            stepMarkers.forEach { m ->
+                val line = m.line.coerceIn(0, (doc.lineCount - 1).coerceAtLeast(0))
+                val renderer = TutorInlayRenderer(editor, line, m.type, m.text, m.label) { m.stale }
+                editor.inlayModel.addBlockElement(doc.getLineStartOffset(line), false, true, 2, renderer)?.let(created::add)
+            }
             comments.forEach { c ->
                 if (!c.marker.isValid) return@forEach
                 val line = doc.getLineNumber(c.marker.startOffset)

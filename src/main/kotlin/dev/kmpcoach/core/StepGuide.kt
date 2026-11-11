@@ -26,11 +26,52 @@ data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>) {
     /** Identifica el cambio aunque el mensaje se vuelva a leer. */
     val key: String get() = "$path#$line#${diff.hashCode()}"
 
+    /**
+     * Cada TODO con lo que permite saber si ya lo hiciste aunque no hayas puesto el esqueleto: las líneas que reemplaza
+     * (las que salen justo antes) o lo que debe existir después (por ejemplo `val isNotificationEnabled`).
+     */
+    val todoSpecs: List<TodoSpec>
+        get() {
+            val out = ArrayList<TodoSpec>()
+            var i = 0
+            while (i < diff.size) {
+                val m = if (diff[i].kind == '+') TODO_N.find(diff[i].text) else null
+                if (m == null) { i++; continue }
+                var j = i + 1
+                while (j < diff.size && diff[j].kind == '+' && TODO_N.find(diff[j].text) == null) j++
+                val removed = ArrayList<String>()
+                var k = i - 1
+                while (k >= 0 && diff[k].kind == '-') { removed.add(0, diff[k].text); k-- }
+                val before = diff.subList(0, i).filter { it.kind == ' ' && it.text.isNotBlank() }.map { it.text }.takeLast(2)
+                val after = diff.subList(j, diff.size).filter { it.kind == ' ' && it.text.isNotBlank() }.map { it.text }.take(2)
+                out += TodoSpec("TODO ${m.groupValues[1]}", m.groupValues[2].trim(), removed, keyOf(diff.subList(i + 1, j).map { it.text }), before, after)
+                i = j
+            }
+            return out
+        }
+
     companion object {
         internal val TODO_N = Regex("TODO\\s+(\\d+)\\s*:?\\s*(.*)")
         internal val TODO_WORD = Regex("\\bTODO\\b")
+
+        /** De `val isNotificationEnabled = TODO()` saca `val isNotificationEnabled`; nada si es muy genérico (`tint`, `.clickable`). */
+        private fun keyOf(group: List<String>): String? {
+            val line = group.firstOrNull { TODO_WORD.containsMatchIn(it) } ?: return null
+            val k = line.substringBefore("TODO").trim().trimEnd('=', ':', '(', ' ').trim()
+            return k.takeIf { it.length >= 6 && !it.startsWith(".") }
+        }
     }
 }
+
+/** Un TODO del esqueleto: su texto, las líneas que reemplaza, lo que debe existir después y el código que lo rodea. */
+data class TodoSpec(
+    val label: String,
+    val text: String,
+    val removed: List<String>,
+    val key: String?,
+    val before: List<String>,
+    val after: List<String>,
+)
 
 /** Un paso del plan que dio la IA: «## Paso 5.1: el componente acepta un callback nulo». */
 data class GuideStep(val number: String, val title: String, val edits: List<StepEdit>, val verify: String?) {
@@ -126,10 +167,16 @@ object StepParser {
 /** Dónde poner el esqueleto: reemplazar las líneas [from]..[to] del archivo (0-based, inclusive) por [lines]. */
 data class Replacement(val from: Int, val to: Int, val lines: List<String>)
 
-/** Estado de un TODO del esqueleto en tu código. */
-enum class TodoState { PENDING, DONE, UNKNOWN }
+/**
+ * Estado de un TODO en tu código. PENDING: el comentario TODO sigue ahí. MISSING: no hay comentario, pero la línea
+ * que debía cambiar sigue igual o falta lo que debía crearse. DONE: hecho. UNKNOWN: no hay forma de saberlo sin la IA.
+ */
+enum class TodoState { PENDING, MISSING, DONE, UNKNOWN }
 
-data class TodoMark(val label: String, val text: String, val state: TodoState)
+/** [line]: dónde está o debería ir (0-based), para llevarte ahí y marcarlo en rojo. */
+data class TodoMark(val label: String, val text: String, val state: TodoState, val line: Int? = null) {
+    val missing: Boolean get() = state == TodoState.PENDING || state == TodoState.MISSING
+}
 
 /**
  * Cómo va un cambio en tu código.
@@ -211,34 +258,57 @@ object StepMatcher {
         if (!edit.isSkeleton) {
             return EditStatus(emptyList(), false, false, afterFound && !hasErrors, cursor, afterFound || beforeFound)
         }
-        val present = edit.todos.associate { (label, _) -> label to (todoLine(file, label) != null) }
-        val placed = afterFound || present.values.any { it }
+        val hint = (edit.line - 1).coerceAtLeast(0)
+        val placed = afterFound || edit.todos.any { (label, _) -> todoLine(file, label) != null }
         val started = placed || seenPlaced || !beforeFound
         // Las líneas que el paso manda reemplazar y que siguen igual: esa parte todavía no la hiciste. Las muy cortas
         // («)», «}») se ignoran porque aparecen en cualquier archivo.
         val untouched = edit.removed.map(::norm).filter { it.length >= 8 }.any { r -> file.any { norm(it) == r } }
-        // Empezaste, no quedan TODO ni líneas por reemplazar, y compila.
-        val complete = started && present.values.none { it } && !untouched && !todoCall && !hasErrors
-        val marks = edit.todos.map { (label, t) ->
-            val state = when {
-                present[label] == true -> TodoState.PENDING
-                placed || seenPlaced || complete -> TodoState.DONE
-                else -> TodoState.UNKNOWN
-            }
-            TodoMark(label, t, state)
+        val marks = edit.todoSpecs.map { s -> mark(file, s, hint) }.map { m ->
+            if (m.state == TodoState.UNKNOWN && (placed || seenPlaced)) m.copy(state = TodoState.DONE) else m
         }
+        // Empezaste, no falta ningún TODO ni quedan líneas por reemplazar, y compila.
+        val complete = started && marks.none { it.missing } && !untouched && !todoCall && !hasErrors
         val canPlace = !placed && !seenPlaced && placeSkeleton(file, edit) != null
-        return EditStatus(marks, placed, canPlace, complete, cursor, placed || beforeFound || seenPlaced)
+        // El cursor va a lo primero que falta; si no falta nada visible, a donde empieza el cambio.
+        val firstGap = marks.firstOrNull { it.missing && it.line != null }?.line
+        return EditStatus(marks, placed, canPlace, complete, firstGap ?: cursor, placed || beforeFound || seenPlaced)
+    }
+
+    /** Si un TODO está hecho y dónde va, mirando tu código. */
+    private fun mark(file: List<String>, s: TodoSpec, hint: Int): TodoMark {
+        todoLine(file, s.label)?.let { return TodoMark(s.label, s.text, TodoState.PENDING, (it + 1).coerceAtMost(file.size - 1)) }
+        val removed = s.removed.map(::norm).filter { it.length >= 8 }
+        if (removed.isNotEmpty()) {
+            val left = file.indices.filter { norm(file[it]) in removed }
+            return if (left.isEmpty()) TodoMark(s.label, s.text, TodoState.DONE)
+            else TodoMark(s.label, s.text, TodoState.MISSING, left.minByOrNull { kotlin.math.abs(it - hint) })
+        }
+        if (s.key != null) {
+            val key = norm(s.key)
+            val at = file.indexOfFirst { norm(it).contains(key) }
+            if (at >= 0) return TodoMark(s.label, s.text, TodoState.DONE, at)
+            // Falta crearlo: va justo antes del código que le sigue en el diff, o justo después del que lo precede.
+            val line = nearest(find(file, s.after), hint)?.first() ?: nearest(find(file, s.before), hint)?.let { it.last() + 1 }
+            return TodoMark(s.label, s.text, TodoState.MISSING, line?.coerceAtMost(file.size - 1))
+        }
+        return TodoMark(s.label, s.text, TodoState.UNKNOWN)
     }
 }
 
+/** Algo que, según el tutor, falta para cumplir el paso: en qué archivo y línea (1-based) y qué. */
+data class StepGap(val file: String?, val line: Int?, val text: String)
+
 /** Respuesta del tutor a «¿Cumple el paso?». */
-data class StepVerdict(val ok: Boolean, val missing: String)
+data class StepVerdict(val ok: Boolean, val gaps: List<StepGap>) {
+    val missing: String get() = gaps.firstOrNull()?.text.orEmpty()
+}
 
 object StepPrompts {
     fun verifySystem(o: PromptOptions) = """
 Eres un mentor de Android y Kotlin Multiplatform. El estudiante (nivel ${o.level.label}) sigue un paso que le dio otra IA y quiere saber si su código ya lo cumple. Compara su código con lo que pide el paso. No le des la solución ni código: si falta algo, dilo en una frase concreta («falta que el color cambie cuando está deshabilitada»). Los TODO del paso son huecos que él debía completar con su propio código, no texto que deba quedar. ${Prompts.lang(o)}
-Responde solo con JSON: {"cumple": true|false, "falta": "una frase, vacía si cumple"}
+Responde solo con JSON: {"cumple": true|false, "faltan": [{"archivo": "Nombre.kt", "linea": 82, "que": "una frase"}]}
+"linea" es el número de línea del código actual (el número antes de "|") donde está o debería ir lo que falta. Un elemento por cada cosa que falte, como máximo 4; lista vacía si cumple.
 """.trim()
 
     fun verifyUser(step: GuideStep, files: List<Pair<String, String>>): String = buildString {
@@ -260,6 +330,12 @@ Responde solo con JSON: {"cumple": true|false, "falta": "una frase, vacía si cu
     fun parseVerdict(text: String): StepVerdict {
         val m = Json.extract(text).asMap()
         val ok = m["cumple"] == true || m.str("cumple") == "true"
-        return StepVerdict(ok, m.str("falta")?.trim().orEmpty())
+        val gaps = m["faltan"].asList().map { it.asMap() }.mapNotNull { g ->
+            val what = g.str("que")?.trim().orEmpty()
+            if (what.isEmpty()) null else StepGap(g.str("archivo")?.trim(), g.str("linea")?.toDoubleOrNull()?.toInt(), what)
+        }.take(4)
+        // Compatibilidad con la respuesta antigua: {"cumple": false, "falta": "…"}.
+        val legacy = m.str("falta")?.trim().orEmpty()
+        return StepVerdict(ok, if (gaps.isEmpty() && legacy.isNotEmpty()) listOf(StepGap(null, null, legacy)) else gaps)
     }
 }
