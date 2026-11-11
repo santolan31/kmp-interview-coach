@@ -4,9 +4,50 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.util.IconLoader
 
 private fun AnActionEvent.kotlinFile() = getData(CommonDataKeys.VIRTUAL_FILE)?.takeIf { TutorService.isKotlin(it) }
+
+/**
+ * Interruptor del tutor en el archivo actual. Aparece como botón «Tutor: activo / apagado» en la barra de pestañas
+ * del editor, en el menú KMP Coach y con atajo. Apagado, el tutor no hace nada por su cuenta en ese archivo.
+ */
+class ToggleTutorAction : AnAction(), DumbAware {
+    override fun getActionUpdateThread() = ActionUpdateThread.BGT
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        val file = e.kotlinFile()
+        e.presentation.isEnabledAndVisible = project != null && file != null
+        if (project == null || file == null) return
+        val on = TutorService.getInstance(project).isTutorOn(file)
+        // En la barra se lee como estado; en un menú, como la acción que vas a hacer.
+        e.presentation.text = when {
+            e.isFromActionToolbar -> if (on) "Tutor: activo" else "Tutor: apagado"
+            on -> "Apagar el tutor en este archivo"
+            else -> "Encender el tutor en este archivo"
+        }
+        e.presentation.description =
+            if (on) "El tutor acompaña este archivo: te da una pista si te atascas. Pulsa para apagarlo."
+            else "El tutor está apagado en este archivo: no aparece nada solo. Pulsa para encenderlo."
+        e.presentation.icon = if (on) ICON else ICON_OFF
+        e.presentation.putClientProperty(ActionUtil.SHOW_TEXT_IN_TOOLBAR, true)
+    }
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val file = e.kotlinFile() ?: return
+        val tutor = TutorService.getInstance(project)
+        val on = !tutor.isTutorOn(file)
+        tutor.setTutorOn(file, on)
+        if (on) tutor.showToolWindow()
+    }
+
+    companion object {
+        private val ICON = IconLoader.getIcon("/icons/coach.svg", ToggleTutorAction::class.java)
+        private val ICON_OFF = IconLoader.getDisabledIcon(ICON)
+    }
+}
 
 /** Ctrl+Alt+Mayús+K: el tutor revisa el archivo actual y deja comentarios bajo las líneas. */
 class ReviewNowAction : AnAction(), DumbAware {

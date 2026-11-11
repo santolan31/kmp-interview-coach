@@ -5,10 +5,7 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.popup.JBPopupFactory
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBPasswordField
-import com.intellij.ui.dsl.builder.Cell
-import com.intellij.ui.layout.selected
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.COLUMNS_LARGE
 import com.intellij.ui.dsl.builder.COLUMNS_MEDIUM
@@ -98,7 +95,7 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
                 status = label("").component
             }
             row {
-                comment("Tu código se envía solo al proveedor que elijas, y solo cuando pides una revisión, preguntas en el chat o activas el tutor en vivo.")
+                comment("Tu código se envía solo al proveedor que elijas, y solo cuando pides una revisión, preguntas en el chat, pides una pista o enciendes el tutor en un archivo.")
             }
         }
         group("Costo (para estimar cuánto gasta cada llamada)") {
@@ -130,22 +127,16 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
             row("Comentarios por revisión (máx.):") {
                 intTextField(1..10).bindIntText({ settings.state.maxComments }, { settings.state.maxComments = it })
             }
-            lateinit var live: Cell<JBCheckBox>
             row {
-                live = checkBox("Tutor en vivo: acompañarme cuando hago una pausa al escribir")
-                    .bindSelected({ settings.state.liveMode }, { settings.state.liveMode = it })
+                comment("El tutor se enciende por archivo, con el interruptor del panel o el botón «Tutor» de la barra de pestañas del editor. " +
+                    "Al abrir el IDE está apagado en todos los archivos. Los comentarios de una revisión no cambian hasta que pidas actualizarla.")
             }
-            indent {
-                row("Pausa antes de actuar (ms):") {
-                    intTextField(500..20_000).bindIntText({ settings.state.liveDelayMs }, { settings.state.liveDelayMs = it })
-                }
-                row("Con errores, darme una pista si no avanzo en (s):") {
-                    intTextField(15..600).bindIntText({ settings.state.stuckAfterSec }, { settings.state.stuckAfterSec = it })
-                }.rowComment("Si el IDE marca errores o hay un TODO(), el tutor espera a que lleves ese tiempo sin reducirlos y te da una sola pista. Para más, pulsa «Otra pista».")
-                row("Sin errores, tiempo mínimo entre revisiones (s):") {
-                    intTextField(5..600).bindIntText({ settings.state.minIntervalSec }, { settings.state.minIntervalSec = it })
-                }.rowComment("Cuando el código no tiene errores, revisa tu enfoque y te hace preguntas, solo si cambió desde la última revisión.")
-            }.enabledIf(live.component.selected)
+            row("Con el tutor encendido, pausa antes de actuar (ms):") {
+                intTextField(500..20_000).bindIntText({ settings.state.liveDelayMs }, { settings.state.liveDelayMs = it })
+            }
+            row("Con errores, darme una pista si no avanzo en (s):") {
+                intTextField(15..600).bindIntText({ settings.state.stuckAfterSec }, { settings.state.stuckAfterSec = it })
+            }.rowComment("Si el IDE marca errores o hay un TODO(), el tutor espera a que lleves ese tiempo sin reducirlos y te da una sola pista. Para más, pulsa «Otra pista».")
         }
         group("Aprendizaje") {
             row {

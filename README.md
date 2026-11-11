@@ -60,7 +60,7 @@ En **Ajustes › Herramientas › KMP Interview Coach** eliges el proveedor, peg
 | Otro compatible con OpenAI | La que indique tu servidor (LM Studio, vLLM, LiteLLM…) | Opcional |
 
 - La clave se guarda en el **almacén seguro del IDE** (Llavero de macOS, KWallet/libsecret o KeePass), una por proveedor. Nunca queda en archivos del proyecto.
-- Tu código solo sale de tu máquina hacia el proveedor que elijas, y solo cuando pides una revisión, preguntas en el chat o activas el tutor en vivo. Con Ollama no sale de tu computador.
+- Tu código solo sale de tu máquina hacia el proveedor que elijas, y solo cuando pides una revisión, preguntas en el chat, pides una pista o enciendes el tutor en un archivo. Con Ollama no sale de tu computador.
 - Para revisiones rápidas conviene un modelo pequeño (por ejemplo `claude-haiku-5-5`, `gpt-6-luna` o `gemini-3.8-flash`). Los modelos cambian seguido: si uno deja de existir, elige otro con **Cargar modelos**.
 
 ## Instalar y recibir actualizaciones
@@ -98,14 +98,17 @@ Compatibilidad: Android Studio Meerkat (2024.3) en adelante e IntelliJ IDEA 2024
 
 ## Cómo se usa
 
-1. Abre el panel **KMP Coach** (barra lateral derecha).
-2. Elige nivel (Junior, Semi Senior o Senior) y reto, y pulsa **Abrir**. Se crea un archivo de borrador `coach_<id>.kt` que empieza con `// coach:<id>`; esa línea es la que le dice al plugin qué reto estás resolviendo.
-3. Escribe. Los subrayados y los objetivos del panel se actualizan solos. Pasa el cursor sobre un subrayado para leer el aviso, o pulsa **Alt+Enter › Coach: preguntarle al tutor por qué**.
-4. Pulsa **Revisar mi código** (o Ctrl+Alt+Mayús+K / ⌘⌥⇧K). Los comentarios aparecen debajo de cada línea y en la vista Problemas.
-5. Activa **Tutor en vivo** si quieres que te acompañe sin pedirlo. Actúa cuando haces una pausa al escribir:
-   - **Con errores del IDE o un `TODO()`:** si llevas un rato sin reducirlos (45 s por defecto), te da **una** pista. Si quieres más, pulsas *Otra pista*. Así no te interrumpe mientras avanzas.
-   - **Sin errores:** revisa tu enfoque como *Revisar mi código*, solo si el código cambió y pasó el tiempo mínimo (12 s por defecto).
-6. En el menú contextual del editor, **KMP Coach › Preguntarle al tutor sobre esto** escribe en el chat una pregunta sobre la selección.
+El panel **KMP Coach** (barra lateral derecha) tiene tres pestañas: **Tutor** (la conversación del archivo que estás editando), **Progreso** (plan, retos, comprensión del código nuevo, repaso y análisis local) y **Consumo**.
+
+1. **Enciende el tutor en el archivo cuando lo necesites.** Interruptor de la pestaña Tutor, botón **Tutor: apagado / activo** junto a las pestañas del editor, o ⌘⌥⇧T (Ctrl+Alt+Mayús+Y en Windows y Linux). Al abrir el IDE está apagado en todos los archivos.
+   - Al encenderlo te da una primera ayuda: una pista si el IDE marca errores o hay un `TODO()`, o una revisión si el archivo no tiene errores.
+   - Después solo habla si te atascas: con errores y un rato sin reducirlos (45 s por defecto), te da **una** pista.
+   - Nunca reemplaza los comentarios de una revisión por su cuenta. Si cambias el código, el panel te avisa y tú pulsas **Actualizar revisión**.
+   - Apagado, no hace nada solo y quita del editor lo que había; la conversación se conserva en el panel.
+2. **Pide lo que quieras, encendido o no.** **Dame una pista** (⌘⌥⇧J / Ctrl+Alt+Mayús+J) y **Revisar archivo** (⌘⌥⇧K / Ctrl+Alt+Mayús+K). Mientras llega la respuesta, la línea muestra «pensando…».
+3. **Responde a un comentario.** Haz clic en el comentario bajo la línea, o en **Responder** en el panel, y escribe en la caja de abajo (Enter envía, Mayús+Enter salta de línea). El tutor evalúa tu respuesta en la conversación y el comentario sale del editor. **Descartar** lo quita sin responder.
+4. **Pregunta.** Escribe en la caja, o usa **KMP Coach › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
+5. **Retos.** En la pestaña Progreso elige nivel y reto, y pulsa **Abrir**. Se crea un archivo de borrador `coach_<id>.kt` que empieza con `// coach:<id>`; esa línea le dice al plugin qué reto estás resolviendo. Los objetivos se marcan solos mientras escribes.
 
 El análisis local y el tutor también funcionan en **cualquier archivo Kotlin de tu proyecto**, no solo en los retos. Puedes desactivarlo para archivos que no sean retos en los ajustes.
 
@@ -113,11 +116,10 @@ Los archivos de borrador no pertenecen a un módulo, así que el IDE puede marca
 
 ## Cuánto consume
 
-El panel muestra arriba **qué archivo está mirando el tutor** (nombre y carpeta), y el botón lleva su nombre: «Revisar ChatListViewModel.kt». Más abajo, la sección **Consumo de la API** muestra:
+La pestaña **Consumo** del panel muestra:
 
-- **Antes de revisar**: los tokens que enviaría la revisión de ese archivo y, si configuraste el precio, su costo aproximado.
 - **Después de cada llamada**: los tokens reales que cobró el proveedor (entrada + salida) y el costo.
-- **Por tipo**: llamadas y promedio por llamada de «Revisar mi código», «Tutor en vivo» y «Chat», en esta sesión y acumulado.
+- **Por tipo**: llamadas y promedio por llamada de revisiones, pistas y chat, en esta sesión y acumulado.
 - **Cupo**: lo que queda de la ventana de límites actual (solicitudes y tokens por minuto), si el proveedor lo informa (Anthropic, OpenAI, Groq).
 - **Saldo**: solo OpenRouter permite consultarlo con una clave normal. Para los demás proveedores, el panel enlaza a su consola de facturación.
 
@@ -183,7 +185,7 @@ src/main/kotlin/dev/kmpcoach/
     Json.kt        JSON mínimo
   ide/             integración con el IDE
     Annotators.kt          subrayados locales y del tutor, Alt+Enter
-    TutorService.kt        revisiones, comentarios bajo la línea, modo en vivo, chat
+    TutorService.kt        revisiones, pistas, interruptor por archivo, chat
     TutorInlayRenderer.kt  dibujo de los comentarios en el editor
     CoachConfigurable.kt   pantalla de ajustes
     ui/CoachPanel.kt       panel lateral

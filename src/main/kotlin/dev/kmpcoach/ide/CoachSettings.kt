@@ -29,11 +29,12 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
         var model by string(ProviderPreset.ANTHROPIC.defaultModel)
         var studentLevel by string(Level.JUNIOR.id)
         var language by string("es")
-        var liveMode by property(false)
+        /** Con el tutor encendido en un archivo: pausa al escribir antes de comprobar si estás atascado. */
         var liveDelayMs by property(2500)
-        var minIntervalSec by property(12)
-        /** En vivo, con errores o código incompleto: segundos sin avanzar antes de que el tutor te dé una pista. */
+        /** Con el tutor encendido, con errores o código incompleto: segundos sin avanzar antes de que te dé una pista. */
         var stuckAfterSec by property(45)
+        /** Ya cerraste la guía de primer uso del panel. */
+        var guideDismissed by property(false)
         /** Muestra la última pista en gris al final de la línea; Tab pide la siguiente y Esc la oculta. */
         var ghostHints by property(true)
         /** Antes de ver el resultado de los tests, pregunta qué crees que pasará. */

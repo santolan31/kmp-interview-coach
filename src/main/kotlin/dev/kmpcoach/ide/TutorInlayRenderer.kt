@@ -25,6 +25,10 @@ class TutorInlayRenderer(
     private val type: CommentType,
     message: String,
     labelText: String? = null,
+    /** Comentario de la revisión que dibuja este bloque: al hacer clic sobre él se abre la respuesta en el panel. */
+    val comment: TutorService.LiveComment? = null,
+    /** Línea final en gris, por ejemplo «clic para responder». */
+    private val footer: String? = null,
     private val isStale: () -> Boolean,
 ) : EditorCustomElementRenderer {
 
@@ -76,9 +80,12 @@ class TutorInlayRenderer(
             }
         }
         if (current.isNotEmpty()) lines += current.toString()
-        val widest = lines.mapIndexed { i, l -> fm.stringWidth(l) + if (i == 0) labelWidth else 0 }.maxOrNull() ?: 0
+        val widest = maxOf(
+            lines.mapIndexed { i, l -> fm.stringWidth(l) + if (i == 0) labelWidth else 0 }.maxOrNull() ?: 0,
+            footer?.let { fm.stringWidth(it) } ?: 0,
+        )
         val width = widest + PAD_X * 2 + BAR
-        val height = lines.size * fm.height + PAD_Y * 2 + MARGIN * 2
+        val height = (lines.size + if (footer != null) 1 else 0) * fm.height + PAD_Y * 2 + MARGIN * 2
         return Layout(font, bold, lines, width, height, fm, labelWidth).also { cached = it; cachedKey = key }
     }
 
@@ -114,6 +121,11 @@ class TutorInlayRenderer(
                 g2.drawString(line, lx, ty)
                 ty += l.fm.height
             }
+            if (footer != null) {
+                g2.font = l.font
+                g2.color = FOOTER_COLOR
+                g2.drawString(footer, tx, ty)
+            }
         } finally {
             g2.dispose()
         }
@@ -137,5 +149,6 @@ class TutorInlayRenderer(
         private val MEJORA_COLOR = JBColor(Color(0x9A6408), Color(0xE3A443))
         private val PREGUNTA_COLOR = JBColor(Color(0x2F6AAE), Color(0x8DB8F2))
         private val BIEN_COLOR = JBColor(Color(0x1C7A49), Color(0x5DBE8A))
+        private val FOOTER_COLOR = JBColor(Color(0x6E7781), Color(0x8B949E))
     }
 }

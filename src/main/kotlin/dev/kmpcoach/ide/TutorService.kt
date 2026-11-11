@@ -18,6 +18,8 @@ import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
+import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.ide.CopyPasteManager
@@ -28,7 +30,6 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
-import com.intellij.psi.util.PsiTreeUtil
 import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.ChatMessage
@@ -64,12 +65,28 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Tutor de IA del proyecto: pide revisiones y pistas al proveedor configurado, las ancla a líneas del editor
- * (comentarios bajo la línea y avisos en el código), mantiene el chat por archivo y el modo en vivo.
+ * (comentarios bajo la línea y avisos en el código), mantiene la conversación por archivo y acompaña los archivos donde encendiste el tutor.
  */
 @Service(Service.Level.PROJECT)
 class TutorService(private val project: Project, private val cs: CoroutineScope) : Disposable {
 
-    class LiveComment(val marker: RangeMarker, val type: CommentType, val message: String)
+    class LiveComment(val marker: RangeMarker, val type: CommentType, val message: String) {
+        val id: String = java.util.UUID.randomUUID().toString().take(8)
+        /** Ya lo respondiste o lo descartaste: deja de dibujarse en el editor. */
+        @Volatile var resolved = false
+        @Volatile var answered = false
+    }
+
+    /** Una entrada de la conversación del panel, en orden de llegada: revisión, pista, solución explicada o mensaje del chat. */
+    sealed class Entry(val at: Long) {
+        class Review(val review: FileReview) : Entry(review.at)
+        class HintGiven(val hint: Hint, at: Long) : Entry(at)
+        class GiveUp(val text: String, at: Long) : Entry(at)
+        class Chat(val message: ChatMessage, at: Long) : Entry(at)
+    }
+
+    private class Turn(val message: ChatMessage, val at: Long)
+    private class Pending(val marker: RangeMarker, val text: String)
 
     class FileReview(
         val review: TutorReview,
@@ -86,7 +103,10 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     /** Escalera de pistas de un archivo: las pistas que ya diste, la explicación de «Me rindo» y la última pista anclada al editor. */
     class HintSession {
         val hints = CopyOnWriteArrayList<Hint>()
+        /** Hora de cada pista, en el mismo orden que [hints]: ordena la conversación del panel. */
+        val hintTimes = CopyOnWriteArrayList<Long>()
         @Volatile var giveUp: String? = null
+        @Volatile var giveUpAt = 0L
         @Volatile var error: String? = null
         @Volatile var marker: RangeMarker? = null
         @Volatile var showInEditor = true
@@ -103,6 +123,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     interface Listener {
         fun changed() {}
         fun prefill(text: String) {}
+        /** El estudiante quiere responder a este comentario de la revisión. */
+        fun reply(file: VirtualFile, comment: LiveComment) {}
     }
 
     private val reviews = ConcurrentHashMap<String, FileReview>()
@@ -111,9 +133,13 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     private val seq = AtomicLong()
     private val reviewJobs = ConcurrentHashMap<String, Job>()
     private val errors = ConcurrentHashMap<String, String>()
-    private val waitingForSyntax = ConcurrentHashMap.newKeySet<String>()
-    private val lastAttempt = ConcurrentHashMap<String, Long>()
-    private val chats = ConcurrentHashMap<String, MutableList<ChatMessage>>()
+    private val chats = ConcurrentHashMap<String, MutableList<Turn>>()
+    /** Archivos donde encendiste el tutor. No se guarda: al abrir el IDE está apagado en todos. */
+    private val tutorOn = ConcurrentHashMap.newKeySet<String>()
+    /** Archivos donde apagaste el tutor con comentarios a la vista: se conservan en el panel, pero no se dibujan en el editor. */
+    private val hiddenInEditor = ConcurrentHashMap.newKeySet<String>()
+    /** Aviso «pensando…» en la línea mientras llega la respuesta del modelo. */
+    private val pending = ConcurrentHashMap<String, Pending>()
     private val chatBusy = ConcurrentHashMap.newKeySet<String>()
     private val listeners = CopyOnWriteArrayList<Listener>()
     private val started = AtomicBoolean(false)
@@ -129,8 +155,29 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     fun reviewFor(file: VirtualFile?): FileReview? = file?.let { reviews[it.url] }
     fun isBusy(file: VirtualFile?) = file != null && reviewJobs.containsKey(file.url)
     fun errorFor(file: VirtualFile?) = file?.let { errors[it.url] }
-    fun isWaitingForSyntax(file: VirtualFile?) = file != null && file.url in waitingForSyntax
-    fun chatFor(file: VirtualFile?): List<ChatMessage> = chats[key(file)]?.toList() ?: emptyList()
+    fun chatFor(file: VirtualFile?): List<ChatMessage> = chats[key(file)]?.map { it.message } ?: emptyList()
+    fun isTutorOn(file: VirtualFile?) = file != null && file.url in tutorOn
+
+    /** Comentarios de la revisión que deben verse en el editor: ni resueltos ni ocultos por haber apagado el tutor. */
+    fun commentsInEditor(file: VirtualFile): List<LiveComment> =
+        if (file.url in hiddenInEditor) emptyList() else reviews[file.url]?.comments?.filter { !it.resolved }.orEmpty()
+
+    fun findComment(file: VirtualFile, id: String): LiveComment? = reviews[file.url]?.comments?.firstOrNull { it.id == id }
+
+    /** Todo lo que el tutor y tú se han dicho sobre este archivo, del más antiguo al más reciente. Llamar desde el hilo de UI. */
+    fun timeline(file: VirtualFile?): List<Entry> {
+        val out = ArrayList<Entry>()
+        if (file != null) {
+            reviews[file.url]?.let { out += Entry.Review(it) }
+            hintSessions[file.url]?.let { s ->
+                val times = s.hintTimes.toList()
+                s.hints.toList().forEachIndexed { i, h -> out += Entry.HintGiven(h, times.getOrElse(i) { 0L }) }
+                s.giveUp?.let { out += Entry.GiveUp(it, s.giveUpAt) }
+            }
+        }
+        chats[key(file)]?.forEach { out += Entry.Chat(it.message, it.at) }
+        return out.sortedBy { it.at }
+    }
     fun isChatBusy(file: VirtualFile?) = key(file) in chatBusy
     /** Nombres de los archivos que el tutor está revisando ahora mismo (puede ser otro distinto del que tienes seleccionado). */
     fun filesUnderReview(): List<String> = reviewJobs.keys.mapNotNull { reviewNames[it] }
@@ -183,6 +230,72 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         EditorFactory.getInstance().eventMulticaster.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) = onDocumentChanged(event.document)
         }, this)
+        // Clic sobre un comentario del tutor en el editor: abre la respuesta en el panel.
+        EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(object : EditorMouseListener {
+            override fun mouseClicked(event: EditorMouseEvent) {
+                if (event.editor.project != project) return
+                val comment = (event.inlay?.renderer as? TutorInlayRenderer)?.comment ?: return
+                val file = FileDocumentManager.getInstance().getFile(event.editor.document) ?: return
+                event.consume()
+                replyTo(file, comment)
+            }
+        }, this)
+    }
+
+    // ---------- interruptor por archivo ----------
+    /**
+     * Enciende o apaga el tutor en un archivo. Encendido: te da una primera ayuda ahora (una pista si hay errores, una
+     * revisión si no la hay) y después solo una pista cuando te atascas. Apagado: no hace nada por su cuenta y quita
+     * del editor lo que había; la conversación se conserva en el panel. Llamar desde el hilo de UI.
+     */
+    fun setTutorOn(file: VirtualFile, on: Boolean) {
+        val url = file.url
+        if (on) {
+            if (!tutorOn.add(url)) return
+            hiddenInEditor.remove(url)
+            hintSessions[url]?.let { if (it.hints.isNotEmpty()) it.showInEditor = true }
+            refreshInlays(file)
+            restartHighlighting(file)
+            firstHelp(file)
+        } else {
+            if (!tutorOn.remove(url)) return
+            liveJobs.remove(url)?.cancel()
+            waitingStuck.remove(url)
+            stuck.remove(url)
+            hiddenInEditor += url
+            hintSessions[url]?.showInEditor = false
+            refreshInlays(file)
+            restartHighlighting(file)
+        }
+        fire()
+    }
+
+    private fun firstHelp(file: VirtualFile) {
+        val doc = FileDocumentManager.getInstance().getDocument(file) ?: return
+        if (doc.text.isBlank()) return
+        val url = file.url
+        val count = IdeProblems.relevant(ideProblems(file), ScratchUtil.isScratch(file)).size + if (IdeProblems.hasTodo(doc.text)) 1 else 0
+        if (count > 0) {
+            // Esta pista ya cuenta como la ayuda de este atasco: la automática espera a que cambie algo.
+            val stuckMs = CoachSettings.getInstance().state.stuckAfterSec.coerceAtLeast(15) * 1000L
+            stuck[url] = StuckTracker(stuckMs).also { it.update(count, System.currentTimeMillis()); it.markSpoken() }
+            if (hintSessions[url]?.hints.isNullOrEmpty() && !isHintBusy(file)) requestHint(file)
+        } else if (reviews[url] == null && !isBusy(file)) {
+            requestReview(file)
+        }
+    }
+
+    private fun setPending(file: VirtualFile, document: Document, line: Int, text: String) {
+        pending.remove(file.url)?.marker?.dispose()
+        if (document.lineCount == 0) return
+        val l = (line - 1).coerceIn(0, document.lineCount - 1)
+        pending[file.url] = Pending(document.createRangeMarker(document.getLineStartOffset(l), document.getLineEndOffset(l)), text)
+        refreshInlays(file)
+    }
+
+    private fun clearPending(file: VirtualFile) {
+        pending.remove(file.url)?.marker?.dispose()
+        refreshInlays(file)
     }
 
     // ---------- errores del IDE ----------
@@ -225,8 +338,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         generation[url] = gen
         reviewJobs.remove(url)?.cancel()
         errors.remove(url)
-        waitingForSyntax.remove(url)
-        lastAttempt[url] = System.currentTimeMillis()
+        hiddenInEditor.remove(url)
+        setPending(file, document, caretLine(file) ?: 1, "revisando el archivo…")
         val settings = CoachSettings.getInstance()
         val options = settings.promptOptions()
         val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
@@ -254,7 +367,10 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 if (!auto) withContext(Dispatchers.EDT) { notifyError(msg) }
             } finally {
                 withContext(NonCancellable + Dispatchers.EDT) {
-                    if (generation[url] == gen) reviewJobs.remove(url)
+                    if (generation[url] == gen) {
+                        reviewJobs.remove(url)
+                        clearPending(file)
+                    }
                     fire()
                 }
             }
@@ -267,6 +383,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     fun cancelReview(file: VirtualFile) {
         generation[file.url] = seq.incrementAndGet()
         reviewJobs.remove(file.url)?.cancel()
+        clearPending(file)
         fire()
     }
 
@@ -305,16 +422,23 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val session = hintSessions[url]?.takeIf { it.showInEditor }
         val hint = session?.hints?.lastOrNull()
         val hintMarker = session?.marker?.takeIf { it.isValid }
-        if (fr == null && (hint == null || hintMarker == null)) return
+        val wait = pending[url]?.takeIf { it.marker.isValid }
+        val comments = commentsInEditor(file)
+        if (comments.isEmpty() && (hint == null || hintMarker == null) && wait == null) return
         val created = ArrayList<Inlay<*>>()
         for (editor in EditorFactory.getInstance().getEditors(doc, project)) {
-            fr?.comments?.forEach { c ->
+            comments.forEach { c ->
                 if (!c.marker.isValid) return@forEach
                 val line = doc.getLineNumber(c.marker.startOffset)
-                val renderer = TutorInlayRenderer(editor, line, c.type, c.message) { fr.stale }
+                val footer = if (c.type == CommentType.BIEN) null else "↩ clic para responder"
+                val renderer = TutorInlayRenderer(editor, line, c.type, c.message, comment = c, footer = footer) { fr?.stale == true }
                 editor.inlayModel.addBlockElement(doc.getLineEndOffset(line), true, false, 0, renderer)?.let(created::add)
             }
-            if (hint != null && hintMarker != null) {
+            if (wait != null) {
+                // Desde el primer instante se ve que el tutor está trabajando, aunque la respuesta tarde.
+                val line = doc.getLineNumber(wait.marker.startOffset)
+                editor.inlayModel.addAfterLineEndElement(doc.getLineEndOffset(line), true, GhostHintRenderer(wait.text, ""))?.let(created::add)
+            } else if (hint != null && hintMarker != null) {
                 val line = doc.getLineNumber(hintMarker.startOffset)
                 val label = "Pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}"
                 val text = session.notice ?: hint.text
@@ -364,6 +488,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         session.notice = null
         session.error = null
         session.showInEditor = true
+        hiddenInEditor.remove(url)
         val focus = caretLine(file)
         val lineCount = document.lineCount
         val settings = CoachSettings.getInstance()
@@ -391,6 +516,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 }
                 withContext(Dispatchers.EDT) {
                     session.hints += hint
+                    session.hintTimes += System.currentTimeMillis()
                     session.problemsAtLastHint = problems.size
                     session.lastAuto = auto
                     session.textAtLastHint = text
@@ -411,16 +537,19 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             } finally {
                 withContext(NonCancellable + Dispatchers.EDT) {
                     hintJobs.remove(url)
+                    clearPending(file)
                     fire()
                 }
             }
         }
         hintJobs[url] = job
+        setPending(file, document, focus ?: problems.firstOrNull()?.line ?: 1, "pensando la pista…")
         fire()
     }
 
     private fun resetLadder(session: HintSession) {
         session.hints.clear()
+        session.hintTimes.clear()
         session.giveUp = null
         session.error = null
         session.notice = null
@@ -480,6 +609,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val reply = client.complete(system, listOf(ChatMessage("user", user)), 1200).await()
                 UsageTracker.getInstance().record(UsageKind.GIVE_UP, file.name, reply.usage, system + user, reply.text, reply.limits)
                 session.giveUp = reply.text.trim()
+                session.giveUpAt = System.currentTimeMillis()
                 // Lo que te hizo rendirte es lo primero que conviene repasar.
                 hints.mapNotNull { it.concept }.forEach { LearnerProfile.getInstance().addReview(it) }
             } catch (e: CancellationException) {
@@ -518,7 +648,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         if (selection.isBlank() || k in chatBusy) return
         val history = chats.getOrPut(k) { mutableListOf() }
         val range = if (firstLine == lastLine) "línea $firstLine" else "líneas $firstLine–$lastLine"
-        history += ChatMessage("user", "Explícame esto ($range):\n```kotlin\n${selection.trimEnd()}\n```")
+        history += turn("user", "Explícame esto ($range):\n```kotlin\n${selection.trimEnd()}\n```")
         chatBusy += k
         fire()
         showToolWindow()
@@ -542,14 +672,14 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 "⚠ " + AiClients.friendly(e, cfg)
             }
             withContext(NonCancellable + Dispatchers.EDT) {
-                history += ChatMessage("assistant", answer)
+                history += turn("assistant", answer)
                 chatBusy -= k
                 fire()
             }
         }
     }
 
-    // ---------- modo en vivo ----------
+    // ---------- tutor encendido: pista si te atascas ----------
     private fun onDocumentChanged(doc: Document) {
         val file = FileDocumentManager.getInstance().getFile(doc) ?: return
         if (!isKotlin(file) || !FileEditorManager.getInstance(project).isFileOpen(file)) return
@@ -565,7 +695,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
 
     private fun scheduleLive(file: VirtualFile, doc: Document) {
         val s = CoachSettings.getInstance().state
-        if (!s.liveMode) return
+        if (!isTutorOn(file)) return
         val wasScheduled = isLiveScheduled(file)
         scheduleTick(file, doc, s.liveDelayMs.toLong().coerceAtLeast(500))
         if (!wasScheduled) fire()
@@ -583,15 +713,16 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     }
 
     /**
-     * Qué hace el tutor en vivo tras una pausa:
-     * - Con errores del IDE o un `TODO()`: espera a que lleves un rato sin reducirlos y te da UNA pista (el primer escalón).
-     * - Sin errores: revisa tu enfoque como «Revisar mi código», respetando el tiempo mínimo entre revisiones.
+     * Qué hace el tutor, encendido en este archivo, tras una pausa al escribir:
+     * - Con errores del IDE o un `TODO()`: espera a que lleves un rato sin reducirlos y te da UNA pista.
+     * - Sin errores: nada. Los comentarios de la revisión no se reemplazan solos, porque quizá los estás leyendo;
+     *   el panel avisa de que el código cambió y tú decides cuándo actualizarla.
      */
     private fun liveTick(file: VirtualFile, doc: Document) {
         val s = CoachSettings.getInstance().state
         val url = file.url
         waitingStuck.remove(url)
-        if (project.isDisposed || !s.liveMode || !FileEditorManager.getInstance(project).isFileOpen(file) || doc.text.isBlank()) {
+        if (project.isDisposed || !isTutorOn(file) || !FileEditorManager.getInstance(project).isFileOpen(file) || doc.text.isBlank()) {
             fire()
             return
         }
@@ -624,45 +755,48 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             resolveSession(it)
             refreshInlays(file)
         }
-
-        val last = maxOf(reviews[url]?.at ?: 0L, lastAttempt[url] ?: 0L)
-        val waitReview = s.minIntervalSec.coerceAtLeast(5) * 1000L - (now - last)
-        if (waitReview > 0) {
-            scheduleTick(file, doc, waitReview)
-            fire()
-            return
-        }
-        if (canAutoReview(file, doc)) requestReview(file, auto = true) else fire()
+        fire()
     }
 
-    private fun canAutoReview(file: VirtualFile, doc: Document): Boolean {
-        if (project.isDisposed || !CoachSettings.getInstance().state.liveMode) return false
-        if (reviewJobs.containsKey(file.url) || !FileEditorManager.getInstance(project).isFileOpen(file)) return false
-        val text = doc.text
-        if (text.isBlank() || reviews[file.url]?.text == text) return false
-        val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
-        if (challenge != null && text.substringAfter('\n').trim() == challenge.starter.trim()) return false
-        val pdm = PsiDocumentManager.getInstance(project)
-        pdm.commitDocument(doc)
-        val psi = pdm.getPsiFile(doc) ?: return false
-        // Si el resaltado aún no marcó un error de sintaxis, no gastes una revisión completa en código que no compila.
-        if (PsiTreeUtil.hasErrorElements(psi)) {
-            if (waitingForSyntax.add(file.url)) fire()
-            return false
+    // ---------- responder a un comentario ----------
+    /** Abre en el panel la respuesta a un comentario de la revisión. */
+    fun replyTo(file: VirtualFile, comment: LiveComment) {
+        showToolWindow()
+        listeners.forEach { it.reply(file, comment) }
+    }
+
+    /** Envía tu respuesta a un comentario: el tutor la evalúa en el chat y el comentario sale del editor. */
+    fun answerComment(file: VirtualFile, comment: LiveComment, answer: String) {
+        if (answer.isBlank() || isChatBusy(file)) return
+        val line = comment.marker.takeIf { it.isValid }?.let { m ->
+            FileDocumentManager.getInstance().getCachedDocument(file)?.getLineNumber(m.startOffset)?.plus(1)
         }
-        waitingForSyntax.remove(file.url)
-        return true
+        comment.answered = true
+        comment.resolved = true
+        refreshInlays(file)
+        restartHighlighting(file)
+        ask(file, Prompts.replyToComment(line, comment.type, comment.message, answer))
+    }
+
+    /** Descarta un comentario sin responderlo: sale del editor y queda marcado en el panel. */
+    fun resolveComment(file: VirtualFile, comment: LiveComment) {
+        comment.resolved = true
+        refreshInlays(file)
+        restartHighlighting(file)
+        fire()
     }
 
     // ---------- chat ----------
+    private fun turn(role: String, text: String) = Turn(ChatMessage(role, text), System.currentTimeMillis())
+
     fun ask(file: VirtualFile?, question: String) {
         val q = question.trim()
         val k = key(file)
         if (q.isEmpty() || k in chatBusy) return
         val text = file?.let { FileDocumentManager.getInstance().getDocument(it)?.text }.orEmpty()
         val history = chats.getOrPut(k) { mutableListOf() }
-        history += ChatMessage("user", q)
-        val snapshot = history.takeLast(10).dropWhile { it.role != "user" }
+        history += turn("user", q)
+        val snapshot = history.takeLast(10).map { it.message }.dropWhile { it.role != "user" }
         chatBusy += k
         fire()
         showToolWindow()
@@ -685,7 +819,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 "⚠ " + AiClients.friendly(e, cfg)
             }
             withContext(NonCancellable + Dispatchers.EDT) {
-                history += ChatMessage("assistant", answer)
+                history += turn("assistant", answer)
                 chatBusy -= k
                 fire()
             }
@@ -739,6 +873,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         reviews.clear()
         hintSessions.values.forEach { it.marker?.dispose() }
         hintSessions.clear()
+        pending.values.forEach { it.marker.dispose() }
+        pending.clear()
     }
 
     companion object {

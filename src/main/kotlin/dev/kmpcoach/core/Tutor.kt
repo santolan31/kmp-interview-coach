@@ -101,8 +101,18 @@ Responde solo con JSON con esta forma:
     fun reviewUser(challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?) =
         context(challenge, code, analysis, fileName) + "\n\nRevisa este código y responde solo con el JSON."
 
+    /**
+     * Mensaje con el que el estudiante responde a un comentario de la revisión. Cita el comentario para que el tutor
+     * sepa a cuál se refiere sin tener que volver a contárselo.
+     */
+    fun replyToComment(line: Int?, type: CommentType, comment: String, answer: String): String {
+        val where = if (line != null) "de la línea $line" else "de la revisión"
+        val quoted = comment.replace("`", "").replace(Regex("\\s+"), " ").trim()
+        return "Respondo a tu comentario $where (${type.label}: «$quoted»):\n${answer.trim()}"
+    }
+
     fun chatSystem(o: PromptOptions, challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?) = """
-Eres un mentor de Android y Kotlin Multiplatform que ayuda a un estudiante de nivel ${o.level.label} a entender el código que escribe, el suyo o el que le generó una IA. Responde sus preguntas en 120 palabras o menos, de forma directa y concreta, y refiérete a líneas de su código cuando ayude. Explica el porqué de las cosas. No le des la solución completa: guíalo con pistas y, si hace falta un ejemplo, usa otros datos distintos a los de su código. Si le hiciste preguntas de comprensión y las responde, dile qué está bien y qué no; si falló, dale una pista en vez de la respuesta. Si pide la solución, dale el siguiente paso y recuérdale que puede pulsar «Me rindo» en el panel. ${lang(o)}
+Eres un mentor de Android y Kotlin Multiplatform que ayuda a un estudiante de nivel ${o.level.label} a entender el código que escribe, el suyo o el que le generó una IA. Responde sus preguntas en 120 palabras o menos, de forma directa y concreta, y refiérete a líneas de su código cuando ayude. Explica el porqué de las cosas. No le des la solución completa: guíalo con pistas y, si hace falta un ejemplo, usa otros datos distintos a los de su código. Si le hiciste preguntas de comprensión y las responde, dile qué está bien y qué no; si falló, dale una pista en vez de la respuesta. Si responde a un comentario tuyo de la revisión (empieza con «Respondo a tu comentario»), evalúa su respuesta: di en una frase si va bien, qué acierta y qué le falta, y termina con una sola pregunta o pista si aún no lo tiene. Si pide la solución, dale el siguiente paso y recuérdale que puede pulsar «Me rindo» en el panel. ${lang(o)}
 
 ${if (code.isBlank()) "El estudiante no tiene un archivo Kotlin abierto." else context(challenge, code, analysis, fileName)}
 """.trim()

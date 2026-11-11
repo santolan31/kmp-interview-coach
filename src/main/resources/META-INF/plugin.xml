@@ -55,6 +55,14 @@
         <group id="KmpCoach.Group" text="KMP Coach" popup="true" icon="/icons/coach.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <!-- Interruptor por archivo: también va como botón en la barra de pestañas del editor. -->
+            <action id="KmpCoach.ToggleTutor" class="dev.kmpcoach.ide.ToggleTutorAction"
+                    text="Encender o apagar el tutor en este archivo"
+                    description="Apagado, el tutor no hace nada por su cuenta en este archivo; encendido, te acompaña y te da una pista si te atascas">
+                <add-to-group group-id="EditorTabActionGroup" anchor="first"/>
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift Y"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift T" replace-all="true"/>
+            </action>
             <action id="KmpCoach.ReviewNow" class="dev.kmpcoach.ide.ReviewNowAction"
                     text="Revisar con el tutor IA" description="El tutor revisa este archivo y comenta debajo de las líneas">
                 <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift K"/>

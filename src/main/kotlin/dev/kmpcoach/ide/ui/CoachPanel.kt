@@ -1,78 +1,94 @@
 package dev.kmpcoach.ide.ui
 
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.ide.BrowserUtil
+import com.intellij.ide.ui.laf.darcula.ui.DarculaButtonUI
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
-import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTextField
+import com.intellij.ui.components.JBTabbedPane
+import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.components.OnOffButton
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.util.Alarm
+import com.intellij.util.ui.GraphicsUtil
 import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.Analysis
 import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.Challenge
 import dev.kmpcoach.core.CommentType
+import dev.kmpcoach.core.FileGuess
 import dev.kmpcoach.core.HintLevel
 import dev.kmpcoach.core.Level
-import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
-import dev.kmpcoach.core.AiClients
-import dev.kmpcoach.core.Prompts
 import dev.kmpcoach.core.ProviderPreset
 import dev.kmpcoach.core.Severity
 import dev.kmpcoach.core.UsageKind
 import dev.kmpcoach.core.UsageMath
 import dev.kmpcoach.core.UsageStats
-import com.intellij.ide.BrowserUtil
-import com.intellij.ide.scratch.ScratchUtil
-import dev.kmpcoach.ide.UsageTracker
-import dev.kmpcoach.ide.LearnerProfile
-import dev.kmpcoach.ide.LearningService
-import dev.kmpcoach.ide.ProjectContext
-import dev.kmpcoach.core.FileGuess
-import com.intellij.openapi.fileChooser.FileChooser
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
-import com.intellij.openapi.ui.popup.JBPopupFactory
-import com.intellij.openapi.vfs.LocalFileSystem
 import dev.kmpcoach.ide.ChallengeFiles
 import dev.kmpcoach.ide.ChallengeRepository
 import dev.kmpcoach.ide.CoachConfigurable
 import dev.kmpcoach.ide.CoachSettings
+import dev.kmpcoach.ide.LearnerProfile
+import dev.kmpcoach.ide.LearningService
+import dev.kmpcoach.ide.ProjectContext
 import dev.kmpcoach.ide.TutorService
+import dev.kmpcoach.ide.UsageTracker
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.FlowLayout
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.event.ActionEvent
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
 import java.net.URLDecoder
 import java.net.URLEncoder
+import javax.swing.AbstractAction
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
+import javax.swing.JComponent
 import javax.swing.JEditorPane
 import javax.swing.JPanel
+import javax.swing.KeyStroke
+import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.HyperlinkEvent
 import javax.swing.text.DefaultCaret
+import javax.swing.text.DefaultEditorKit
 
 class CoachToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -83,7 +99,35 @@ class CoachToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-/** Panel lateral: elegir reto, objetivos en vivo, análisis local, revisión del tutor y chat. */
+/** Caja redondeada donde se escribe, como la de un chat. */
+private class RoundedBox : JPanel(BorderLayout()) {
+    init {
+        isOpaque = false
+        border = JBUI.Borders.empty(1)
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            GraphicsUtil.setupAAPainting(g2)
+            val arc = JBUI.scale(16)
+            g2.color = UIUtil.getTextFieldBackground()
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = JBColor.border()
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+/**
+ * Panel lateral con tres pestañas:
+ * - «Tutor»: la conversación del archivo actual (revisiones, pistas y chat, en orden de llegada), el interruptor del
+ *   tutor y la caja para escribir.
+ * - «Progreso»: plan, retos, comprensión del código nuevo, repaso y análisis local.
+ * - «Consumo»: uso y costo de la API.
+ */
 class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, true), Disposable {
 
     private val repo = ChallengeRepository.getInstance(project)
@@ -91,76 +135,64 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val settings = CoachSettings.getInstance()
     private val usage = UsageTracker.getInstance()
 
+    // Pestaña «Tutor»
+    private val feed = htmlPane()
+    private val feedScroll = scrollOf(feed)
+    private val fileLabel = JBLabel()
+    private val statusLabel = JBLabel()
+    private val tutorSwitch = OnOffButton()
+    private val input = JBTextArea(3, 20)
+    private val replyLabel = JBLabel()
+    private val replyRow = JPanel(BorderLayout())
+    private val hintLink = ActionLink("Dame una pista") { currentKotlin()?.let(tutor::requestHint) }
+    private val reviewLink = ActionLink("Revisar archivo") { reviewNow() }
+    private val giveUpLink = ActionLink("Me rindo") { currentKotlin()?.let(::giveUpDialog) }
+    private val sendButton = JButton("Enviar")
+    private val modelLink = ActionLink("") { openSettings() }
+
+    // Pestaña «Progreso»
+    private val progress = htmlPane()
+    private val progressScroll = scrollOf(progress)
     private val levelBox = ComboBox(DefaultComboBoxModel(Level.entries.toTypedArray()))
     private val challengeBox = ComboBox<Challenge>()
-    private val pane = JEditorPane()
-    private val scroll = JBScrollPane(pane)
-    private val chatField = JBTextField()
-    private val liveCheck = JBCheckBox("Tutor en vivo")
-    private val reviewButton = JButton("Revisar mi código")
-    private val hintButton = JButton("Dame una pista")
+
+    // Pestaña «Consumo»
+    private val usagePane = htmlPane()
+    private val usageScroll = scrollOf(usagePane)
+
+    private val tabs = JBTabbedPane()
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private var syncing = false
+    private var showGuessCompare = false
+
+    /** Comentario de la revisión al que estás respondiendo: lo siguiente que envíes va para él. */
+    private var replying: Pair<VirtualFile, TutorService.LiveComment>? = null
+
+    /** Último HTML de cada vista: si no cambió no se vuelve a pintar, para no perder la selección ni mover el scroll. */
+    private val shown = HashMap<JEditorPane, String>()
+    private var feedSignature = ""
 
     init {
-        pane.contentType = "text/html"
-        pane.editorKit = HTMLEditorKitBuilder.simple()
-        pane.isEditable = false
-        pane.font = JBFont.label()
-        pane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
-        pane.border = JBUI.Borders.empty(8, 10)
-        (pane.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
-        pane.addHyperlinkListener { e -> if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) onLink(e.description) }
-
         val level = Level.of(settings.state.studentLevel)
         levelBox.selectedItem = level
         fillChallenges(level)
         levelBox.addActionListener { if (!syncing) (levelBox.selectedItem as? Level)?.let(::fillChallenges) }
 
-        chatField.emptyText.text = "Pregúntale al tutor sobre tu código"
-        chatField.addActionListener { send() }
-        reviewButton.addActionListener { reviewNow() }
-        hintButton.addActionListener { currentFile()?.takeIf { TutorService.isKotlin(it) }?.let(tutor::requestHint) }
-        liveCheck.toolTipText = "Con errores, te da una pista si no avanzas; sin errores, revisa tu enfoque cuando haces una pausa. Usa tu clave de API."
-        liveCheck.isSelected = settings.state.liveMode
-        liveCheck.addActionListener { settings.state.liveMode = liveCheck.isSelected; scheduleRefresh() }
-
-        val top = panel {
-            row {
-                cell(levelBox)
-                cell(challengeBox).align(AlignX.FILL).resizableColumn()
-                button("Abrir") { (challengeBox.selectedItem as? Challenge)?.let { ChallengeFiles.open(project, it) } }
-            }
-        }
-        val bottom = panel {
-            row {
-                cell(hintButton)
-                cell(reviewButton)
-            }
-            row {
-                cell(liveCheck)
-                link("Ajustes") { openSettings() }
-            }
-            row {
-                cell(chatField).align(AlignX.FILL).resizableColumn()
-                button("Preguntar") { send() }
-            }
-        }
-        top.border = JBUI.Borders.empty(4, 6, 0, 6)
-        bottom.border = JBUI.Borders.empty(0, 6, 6, 6)
-        setContent(JPanel(BorderLayout()).apply {
-            add(top, BorderLayout.NORTH)
-            add(scroll, BorderLayout.CENTER)
-            add(bottom, BorderLayout.SOUTH)
-        })
+        tabs.addTab("Tutor", tutorTab())
+        tabs.addTab("Progreso", progressTab())
+        tabs.addTab("Consumo", usageScroll)
+        setContent(tabs)
 
         tutor.addListener(this, object : TutorService.Listener {
             override fun changed() = scheduleRefresh()
             override fun prefill(text: String) {
-                chatField.text = text
-                chatField.requestFocusInWindow()
-                chatField.caretPosition = text.length
+                setReplying(null)
+                tabs.selectedIndex = 0
+                input.text = text
+                input.requestFocusInWindow()
+                input.caretPosition = text.length
             }
+            override fun reply(file: VirtualFile, comment: TutorService.LiveComment) = setReplying(file to comment)
         })
         usage.addListener(this) { scheduleRefresh() }
         ProjectContext.getInstance(project).addListener(this) { scheduleRefresh() }
@@ -183,7 +215,126 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         refresh()
     }
 
+    // ---------- construcción ----------
+    private fun htmlPane() = JEditorPane().apply {
+        contentType = "text/html"
+        editorKit = HTMLEditorKitBuilder.simple()
+        isEditable = false
+        font = JBFont.label()
+        background = JBColor.PanelBackground
+        putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+        border = JBUI.Borders.empty(8, 12)
+        (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
+        addHyperlinkListener { e -> if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) onLink(e.description) }
+    }
+
+    private fun scrollOf(pane: JEditorPane) = JBScrollPane(pane).apply {
+        border = JBUI.Borders.empty()
+        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+    }
+
+    private fun tutorTab(): JComponent {
+        fileLabel.font = JBFont.label().asBold()
+        statusLabel.font = JBFont.small()
+        statusLabel.foreground = UIUtil.getContextHelpForeground()
+        statusLabel.border = JBUI.Borders.emptyTop(4)
+        tutorSwitch.toolTipText = "Enciende o apaga el tutor en este archivo"
+        tutorSwitch.addActionListener { if (!syncing) currentKotlin()?.let { tutor.setTutorOn(it, tutorSwitch.isSelected) } }
+
+        val header = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(8, 12, 6, 12)
+            add(fileLabel, BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply {
+                isOpaque = false
+                add(JBLabel("Tutor"))
+                add(tutorSwitch)
+            }, BorderLayout.EAST)
+            add(statusLabel, BorderLayout.SOUTH)
+        }
+
+        input.lineWrap = true
+        input.wrapStyleWord = true
+        input.isOpaque = false
+        input.font = JBFont.label()
+        input.border = JBUI.Borders.empty(8, 10, 4, 10)
+        input.emptyText.text = "Pregunta o responde al tutor (Enter envía)"
+        // Enter envía, como en un chat; Mayús+Enter hace el salto de línea.
+        input.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "kmpcoach.send")
+        input.getInputMap(JComponent.WHEN_FOCUSED)
+            .put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), DefaultEditorKit.insertBreakAction)
+        input.actionMap.put("kmpcoach.send", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent) = send()
+        })
+        val inputScroll = JBScrollPane(input).apply {
+            border = JBUI.Borders.empty()
+            isOpaque = false
+            viewport.isOpaque = false
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        }
+
+        sendButton.putClientProperty(DarculaButtonUI.DEFAULT_STYLE_KEY, true)
+        sendButton.addActionListener { send() }
+        giveUpLink.toolTipText = "Ver la solución explicada o copiarla para tu chat. Antes te recuerda cuántas pistas quedan."
+        val actions = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(2, 10, 6, 6)
+            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), JBUI.scale(4))).apply {
+                isOpaque = false
+                add(hintLink)
+                add(reviewLink)
+                add(giveUpLink)
+            }, BorderLayout.CENTER)
+            add(sendButton, BorderLayout.EAST)
+        }
+        val box = RoundedBox().apply {
+            add(inputScroll, BorderLayout.CENTER)
+            add(actions, BorderLayout.SOUTH)
+        }
+
+        replyRow.isOpaque = false
+        replyRow.border = JBUI.Borders.empty(0, 6, 6, 6)
+        replyRow.add(replyLabel, BorderLayout.CENTER)
+        replyRow.add(ActionLink("Cancelar") { setReplying(null) }, BorderLayout.EAST)
+        replyRow.isVisible = false
+
+        modelLink.toolTipText = "Modelo de IA que responde. Pulsa para cambiarlo."
+        val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyTop(4)
+            add(modelLink)
+        }
+        val composer = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.empty(6, 10, 8, 10)
+            add(replyRow, BorderLayout.NORTH)
+            add(box, BorderLayout.CENTER)
+            add(footer, BorderLayout.SOUTH)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            add(header, BorderLayout.NORTH)
+            add(feedScroll, BorderLayout.CENTER)
+            add(composer, BorderLayout.SOUTH)
+        }
+    }
+
+    private fun progressTab(): JComponent {
+        val top = panel {
+            row("Retos de práctica:") {
+                cell(levelBox)
+                cell(challengeBox).align(AlignX.FILL).resizableColumn()
+                button("Abrir") { (challengeBox.selectedItem as? Challenge)?.let { ChallengeFiles.open(project, it) } }
+            }
+        }
+        top.border = JBUI.Borders.empty(6, 10, 0, 10)
+        return JPanel(BorderLayout()).apply {
+            add(top, BorderLayout.NORTH)
+            add(progressScroll, BorderLayout.CENTER)
+        }
+    }
+
+    // ---------- estado ----------
     private fun currentFile(): VirtualFile? = FileEditorManager.getInstance(project).selectedTextEditor?.virtualFile
+    private fun currentKotlin(): VirtualFile? = currentFile()?.takeIf { TutorService.isKotlin(it) }
 
     private fun fillChallenges(level: Level) {
         challengeBox.model = DefaultComboBoxModel(repo.byLevel(level).toTypedArray())
@@ -210,16 +361,43 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun openSettings() = ShowSettingsUtil.getInstance().showSettingsDialog(project, CoachConfigurable::class.java)
 
     private fun reviewNow() {
-        val f = currentFile()?.takeIf { TutorService.isKotlin(it) } ?: return
-        tutor.requestReview(f)
+        currentKotlin()?.let(tutor::requestReview)
     }
 
     private fun send() {
-        val q = chatField.text.trim()
+        val q = input.text.trim()
         if (q.isEmpty()) return
-        chatField.text = ""
-        tutor.ask(currentFile()?.takeIf { TutorService.isKotlin(it) }, q)
+        val file = currentKotlin()
+        if (tutor.isChatBusy(file)) return
+        val r = replying
+        input.text = ""
+        if (r != null && r.first == file) {
+            setReplying(null)
+            tutor.answerComment(r.first, r.second, q)
+        } else {
+            tutor.ask(file, q)
+        }
     }
+
+    private fun setReplying(target: Pair<VirtualFile, TutorService.LiveComment>?) {
+        replying = target
+        replyRow.isVisible = target != null
+        if (target != null) {
+            val (file, c) = target
+            val line = lineOf(file, c)
+            val quote = c.message.replace("`", "").let { if (it.length > 90) it.take(87) + "…" else it }
+            replyLabel.text = "<html>↩ Respondiendo a <b>L${line + 1} · ${c.type.label}</b>: «${esc(quote)}»</html>"
+            tabs.selectedIndex = 0
+            input.requestFocusInWindow()
+        }
+        replyRow.revalidate()
+    }
+
+    private fun lineOf(file: VirtualFile, c: TutorService.LiveComment): Int =
+        if (c.marker.isValid) FileDocumentManager.getInstance().getDocument(file)?.getLineNumber(c.marker.startOffset) ?: 0 else 0
+
+    private fun shortcut(actionId: String): String = KeymapUtil.getFirstKeyboardShortcutText(actionId)
+    private fun shortcutNote(actionId: String): String = shortcut(actionId).let { if (it.isEmpty()) "" else " ($it)" }
 
     // ---------- HTML ----------
     private fun hex(c: Color) = "#" + ColorUtil.toHex(c)
@@ -228,6 +406,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val bad get() = hex(JBColor(Color(0xB0382A), Color(0xEC7C69)))
     private val info get() = hex(JBColor(Color(0x2F6AAE), Color(0x8DB8F2)))
     private val muted get() = hex(JBColor.GRAY)
+    private val cardBg get() = hex(JBColor(Color(0xEBECF0), Color(0x393B40)))
+    private val userBg get() = hex(JBColor(Color(0xD9E6FA), Color(0x2E436E)))
 
     private fun esc(s: String) = StringUtil.escapeXmlEntities(s)
 
@@ -239,73 +419,236 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun sevColor(s: Severity) = when (s) { Severity.ERROR -> bad; Severity.WARN -> warn; Severity.INFO -> info }
     private fun typeColor(t: CommentType) = when (t) { CommentType.ERROR -> bad; CommentType.MEJORA -> warn; CommentType.PREGUNTA -> info; CommentType.BIEN -> ok }
 
+    /** Quién habla y cuándo, en gris sobre cada mensaje del tutor. */
+    private fun head(text: String) = "<div style='color:$muted;margin-bottom:3px'>$text</div>"
+
+    /** Tarjeta con una barra de color a la izquierda: un comentario o una pista. */
+    private fun card(color: String, html: String) =
+        "<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:5px'><tr><td width='3' bgcolor='$color'></td>" +
+            "<td><table width='100%' cellspacing='0' cellpadding='7' bgcolor='$cardBg'><tr><td>$html</td></tr></table></td></tr></table>"
+
+    /** Burbuja de lo que escribiste tú, desplazada a la derecha como en un chat. */
+    private fun bubble(html: String) =
+        "<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='36'>&nbsp;</td>" +
+            "<td><table width='100%' cellspacing='0' cellpadding='7' bgcolor='$userBg'><tr><td>$html</td></tr></table></td></tr></table>"
+
+    private fun entry(html: String) = "<div style='margin-bottom:12px'>$html</div>"
+
+    private fun show(pane: JEditorPane, scroll: JBScrollPane, html: String, toBottom: Boolean = false) {
+        if (shown[pane] == html) return
+        shown[pane] = html
+        val bar = scroll.verticalScrollBar
+        val pos = bar.value
+        pane.text = html
+        SwingUtilities.invokeLater {
+            scroll.validate()
+            bar.value = if (toBottom) bar.maximum else pos
+        }
+    }
+
     private fun refresh() {
         if (project.isDisposed) return
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
-        val file = editor?.virtualFile
-        val isKotlin = file != null && TutorService.isKotlin(file)
-        val text = if (isKotlin) editor!!.document.text else ""
-        val challenge = if (isKotlin) repo.challengeFor(text) else null
+        val file = editor?.virtualFile?.takeIf { TutorService.isKotlin(it) }
+        val text = if (file != null) editor.document.text else ""
+        val challenge = if (file != null) repo.challengeFor(text) else null
         syncSelection(challenge)
-        val busy = tutor.isBusy(file)
-        reviewButton.isEnabled = isKotlin && !busy
-        reviewButton.text = when {
-            busy -> "Revisando ${shortName(file!!)}…"
-            isKotlin -> "Revisar ${shortName(file!!)}"
-            else -> "Revisar mi código"
+        if (replying != null && replying?.first != file) setReplying(null)
+        refreshControls(file)
+
+        val entries = tutor.timeline(file)
+        val session = tutor.hintSession(file)
+        // Si llegó algo nuevo a la conversación, baja hasta el final; si no, respeta donde estabas leyendo.
+        val signature = listOf(
+            file?.url, entries.size, tutor.isBusy(file), tutor.isHintBusy(file), tutor.isGiveUpBusy(file), tutor.isChatBusy(file),
+            session?.notice, session?.error, tutor.errorFor(file),
+        ).joinToString("|")
+        show(feed, feedScroll, feedHtml(file, entries), toBottom = signature != feedSignature)
+        feedSignature = signature
+
+        val analysis = if (file != null) Analyzer.analyze(text, challenge, lexical = false) else null
+        show(progress, progressScroll, progressHtml(file, text, challenge, analysis))
+        show(usagePane, usageScroll, usageHtml())
+    }
+
+    private fun refreshControls(file: VirtualFile?) {
+        fileLabel.text = file?.name ?: "Sin archivo Kotlin abierto"
+        syncing = true
+        try {
+            tutorSwitch.isEnabled = file != null
+            tutorSwitch.isSelected = tutor.isTutorOn(file)
+        } finally {
+            syncing = false
         }
-        reviewButton.toolTipText = if (isKotlin) "Envía ${file!!.name} al tutor de IA (Ctrl+Alt+Mayús+K / ⌘⌥⇧K)" else "Abre un archivo .kt para revisarlo"
-        liveCheck.isSelected = settings.state.liveMode
-        val next = if (isKotlin) tutor.nextHintLevel(file) else null
+        statusLabel.text = "<html>${esc(statusText(file))}</html>"
+
+        val next = if (file != null) tutor.nextHintLevel(file) else null
         val hintBusy = tutor.isHintBusy(file)
-        hintButton.isEnabled = isKotlin && !hintBusy && next != null
-        hintButton.text = when {
+        hintLink.isEnabled = file != null && !hintBusy && next != null
+        hintLink.text = when {
             hintBusy -> "Pensando la pista…"
-            !isKotlin || next == HintLevel.QUESTION -> "Dame una pista"
+            file == null || next == HintLevel.QUESTION -> "Dame una pista"
             next == null -> "Sin más pistas"
             else -> "Otra pista (${next.number}/${HintLevel.entries.size})"
         }
-        hintButton.toolTipText = "Te guía sin darte la solución: pregunta → concepto → herramienta → pasos (Ctrl+Alt+Mayús+J / ⌘⌥⇧J)"
-
-        val analysis = if (isKotlin) Analyzer.analyze(text, challenge, lexical = false) else null
-        val h = StringBuilder("<html><body>")
-        fileHeader(h, file, isKotlin)
-        planSection(h)
-        if (challenge != null && analysis != null) challengeSection(h, challenge, text, analysis) else intro(h, isKotlin)
-        if (isKotlin && analysis != null) hintSection(h, file!!)
-        comprehensionSection(h, if (isKotlin) file else null, text)
-        if (isKotlin && analysis != null) {
-            localSection(h, analysis)
-            tutorSection(h, file!!, text, challenge, analysis)
+        hintLink.toolTipText = "Te guía sin darte la solución: pregunta → concepto → herramienta → pasos" + shortcutNote("KmpCoach.Hint")
+        val busy = tutor.isBusy(file)
+        reviewLink.isEnabled = file != null && !busy
+        reviewLink.text = when {
+            busy -> "Revisando…"
+            tutor.reviewFor(file) != null -> "Actualizar revisión"
+            else -> "Revisar archivo"
         }
-        reviewSection(h)
-        if (settings.state.liveMode) liveSection(h, if (isKotlin) file else null)
-        chatSection(h, if (isKotlin) file else null)
-        usageSection(h)
-        h.append("<p style='color:$muted'>${esc(settings.modelLabel())} · <a href='settings'>cambiar</a> · <a href='reload'>recargar retos</a></p>")
-        h.append("</body></html>")
-
-        val pos = scroll.verticalScrollBar.value
-        pane.text = h.toString()
-        SwingUtilities.invokeLater { scroll.verticalScrollBar.value = pos }
+        reviewLink.toolTipText = "El tutor comenta debajo de las líneas de este archivo" + shortcutNote("KmpCoach.ReviewNow")
+        giveUpLink.isEnabled = file != null && !tutor.isGiveUpBusy(file)
+        sendButton.isEnabled = !tutor.isChatBusy(file)
+        modelLink.text = settings.modelLabel()
     }
 
-    private fun intro(h: StringBuilder, isKotlin: Boolean) {
-        h.append("<p><b>KMP Interview Coach</b></p>")
-        if (!isKotlin) {
-            h.append("<p>Abre cualquier archivo Kotlin de tu proyecto, o elige un reto arriba y pulsa <b>Abrir</b>. ")
-            h.append("Si te atascas, pide una <b>pista</b>: el tutor te guía con preguntas sin darte el código. ")
-            h.append("Selecciona código y usa <b>KMP Coach › Explícame esto</b> para comprobar que lo entiendes.</p>")
-        } else {
-            h.append("<p style='color:$muted'>Este archivo no es un reto: las pistas, el análisis local y el tutor trabajan sobre tu propio código.</p>")
+    private fun statusText(file: VirtualFile?): String {
+        if (file == null) return "Abre un archivo .kt para usar el tutor."
+        if (!tutor.isTutorOn(file)) {
+            return "Apagado en este archivo: nada aparece solo. Enciéndelo cuando lo necesites${shortcutNote("KmpCoach.ToggleTutor")}."
         }
+        val problems = tutor.ideProblems(file).size
+        return when {
+            tutor.isHintBusy(file) -> "Activo · pensando una pista…"
+            tutor.isBusy(file) -> "Activo · revisando el archivo…"
+            problems > 0 -> "Activo · el IDE marca $problems ${if (problems == 1) "error" else "errores"} · " +
+                "si no avanzas en ${settings.state.stuckAfterSec} s te doy una pista"
+            else -> "Activo · sin errores · los comentarios no cambian hasta que pidas actualizar la revisión"
+        }
+    }
+
+    // ---------- pestaña «Tutor»: la conversación ----------
+    private fun feedHtml(file: VirtualFile?, entries: List<TutorService.Entry>): String {
+        val h = StringBuilder("<html><body>")
+        val session = tutor.hintSession(file)
+        val working = tutor.isBusy(file) || tutor.isHintBusy(file) || tutor.isGiveUpBusy(file) || tutor.isChatBusy(file)
+        if (entries.isEmpty() && !working) guide(h, file)
+
+        val totalHints = session?.hints?.size ?: 0
+        var hintIndex = 0
+        entries.forEach { e ->
+            when (e) {
+                is TutorService.Entry.Review -> if (file != null) reviewEntry(h, file, e.review)
+                is TutorService.Entry.HintGiven -> {
+                    hintIndex++
+                    val hint = e.hint
+                    val body = StringBuilder("<a href='line:${hint.line - 1}'>L${hint.line}</a> ${md(hint.text)}")
+                    if (hint.redacted) body.append("<br><span style='color:$muted'>Oculté un fragmento con código de tu ejercicio.</span>")
+                    if (hintIndex == totalHints && session?.lastAuto == true) {
+                        body.append("<br><span style='color:$muted'>Te la di porque llevabas un rato sin avanzar.</span>")
+                    }
+                    h.append(entry(head("Tutor · pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}") + card(info, body.toString())))
+                }
+                is TutorService.Entry.GiveUp -> h.append(entry(
+                    head("Tutor · solución explicada") + md(e.text) +
+                        "<div style='margin-top:4px'><a href='handoff'>Copiar para preguntarle a Claude</a></div>"
+                ))
+                is TutorService.Entry.Chat ->
+                    if (e.message.role == "user") h.append(entry(bubble(md(e.message.content))))
+                    else h.append(entry(head("Tutor") + md(e.message.content)))
+            }
+        }
+
+        // Lo que está pasando ahora y los avisos, siempre al final.
+        session?.notice?.let {
+            h.append(entry("<span style='color:$warn'>${esc(it)}</span> <a href='hintforce'>Necesito otra pista igual</a>"))
+        }
+        session?.error?.let { h.append(entry("<span style='color:$bad'>${esc(it)}</span> <a href='settings'>Ajustes</a>")) }
+        tutor.errorFor(file)?.let { h.append(entry("<span style='color:$bad'>${esc(it)}</span> <a href='settings'>Ajustes</a>")) }
+        when {
+            tutor.isHintBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · pensando la pista…</span>"))
+            tutor.isBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · revisando ${esc(file?.name.orEmpty())}…</span> <a href='cancel'>Detener</a>"))
+            tutor.isGiveUpBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · preparando la solución explicada…</span>"))
+            tutor.isChatBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · escribiendo…</span>"))
+        }
+
+        val links = buildList {
+            if (totalHints > 0) {
+                if (tutor.nextHintLevel(file) == null) add("Ya viste las ${HintLevel.entries.size} pistas: inténtalo; si no sale, ríndete sin culpa")
+                add("<a href='newproblem'>Nuevo problema (reinicia las pistas)</a>")
+                if (session?.showInEditor == true) add("<a href='hidehint'>Quitar la pista del editor</a>")
+            }
+            if (tutor.chatFor(file).isNotEmpty()) add("<a href='clearchat'>Borrar el chat</a>")
+        }
+        if (links.isNotEmpty()) h.append("<div style='color:$muted'>${links.joinToString(" · ")}</div>")
+        h.append("</body></html>")
+        return h.toString()
+    }
+
+    /** Conversación vacía: cómo se usa, en tres gestos. Se puede cerrar. */
+    private fun guide(h: StringBuilder, file: VirtualFile?) {
         if (settings.state.model.isNullOrBlank() && settings.preset.defaultModel.isEmpty()) {
-            h.append("<p style='color:$warn'>Falta elegir el modelo de IA. <a href='settings'>Configurar proveedor</a></p>")
+            h.append(entry("<span style='color:$warn'>Falta elegir el modelo de IA.</span> <a href='settings'>Configurar proveedor</a>"))
         }
+        if (file == null) {
+            h.append(entry("<span style='color:$muted'>Abre un archivo Kotlin de tu proyecto, o un reto desde la pestaña <b>Progreso</b>. " +
+                "También puedes escribir abajo una pregunta general.</span>"))
+            return
+        }
+        if (settings.state.guideDismissed) {
+            h.append("<div style='color:$muted;margin-bottom:8px'>Enciende el tutor, pide una pista o escribe abajo. Por ejemplo:</div>")
+            listOf("¿Qué me preguntaría un entrevistador sobre este código?", "¿Qué parte de este archivo es la más frágil?").forEach { q ->
+                h.append("<div><a href='ask:${URLEncoder.encode(q, Charsets.UTF_8)}'>${esc(q)}</a></div>")
+            }
+            return
+        }
+        val body = StringBuilder()
+        body.append("<b>Cómo usar el tutor en este archivo</b><br><br>")
+        body.append("<b>1. Enciéndelo cuando lo necesites.</b> Interruptor de arriba, botón «Tutor» junto a las pestañas del editor")
+        body.append(shortcutNote("KmpCoach.ToggleTutor")).append(". Te da una primera ayuda y luego solo habla si te atascas. Apagado, no aparece nada solo.<br><br>")
+        body.append("<b>2. Pide lo que quieras, encendido o no.</b> <a href='hint'>Dame una pista</a>").append(shortcutNote("KmpCoach.Hint"))
+        body.append(" te guía sin darte la solución. <a href='review'>Revisar archivo</a>").append(shortcutNote("KmpCoach.ReviewNow"))
+        body.append(" deja comentarios bajo las líneas, y no cambian hasta que tú pidas actualizarlos.<br><br>")
+        body.append("<b>3. Responde.</b> Haz clic en un comentario del editor, o en «Responder» aquí, y escribe abajo. El tutor te dice si vas bien.<br><br>")
+        body.append("<a href='guideok'>Entendido, ocultar esta guía</a>")
+        h.append(entry(card(info, body.toString())))
+    }
+
+    private fun reviewEntry(h: StringBuilder, file: VirtualFile, fr: TutorService.FileReview) {
+        val r = fr.review
+        val b = StringBuilder(head("Tutor · revisión de ${esc(file.name)} · ${ago(fr.at)}"))
+        val stColor = when (r.status) { "listo" -> ok; "desviado" -> bad; "a_medias" -> warn; else -> info }
+        b.append("<span style='color:$stColor'><b>${esc(r.statusLabel)}</b></span>")
+        if (r.summary.isNotBlank()) b.append(" · ").append(md(r.summary))
+        fr.comments.forEach { c ->
+            val line = lineOf(file, c)
+            val body = StringBuilder("<a href='line:$line'>L${line + 1}</a> <b style='color:${typeColor(c.type)}'>${c.type.label}</b><br>${md(c.message)}")
+            when {
+                c.answered -> body.append("<br><span style='color:$ok'>✓ Respondido</span> <span style='color:$muted'>· la respuesta del tutor está más abajo</span>")
+                c.resolved -> body.append("<br><span style='color:$muted'>Descartado</span>")
+                c.type != CommentType.BIEN -> body.append("<br><a href='reply:${c.id}'>Responder</a> · <a href='resolve:${c.id}'>Descartar</a>")
+            }
+            b.append(card(typeColor(c.type), body.toString()))
+        }
+        if (r.nextStep.isNotBlank()) b.append("<div style='margin-top:6px'><b>Siguiente paso:</b> ${md(r.nextStep)}</div>")
+        if (fr.stale) {
+            b.append("<div style='margin-top:6px;color:$warn'>Cambiaste el código desde esta revisión. Los comentarios siguen aquí hasta que tú decidas. ")
+            b.append("<a href='review'>Actualizar revisión</a></div>")
+        }
+        b.append("<div style='margin-top:4px;color:$muted'>")
+        fr.call?.let { b.append("${callCost(it.usage.inputTokens, it.usage.outputTokens, it.costUsd, it.estimated)} · ") }
+        b.append("<a href='clear'>Quitar esta revisión</a></div>")
+        h.append(entry(b.toString()))
+    }
+
+    // ---------- pestaña «Progreso» ----------
+    private fun progressHtml(file: VirtualFile?, text: String, challenge: Challenge?, analysis: Analysis?): String {
+        val h = StringBuilder("<html><body>")
+        planSection(h)
+        if (challenge != null && analysis != null) challengeSection(h, challenge, text, analysis)
+        comprehensionSection(h, file, text)
+        repasoSection(h)
+        if (analysis != null) localSection(h, analysis)
+        h.append("<p style='color:$muted'><a href='reload'>Recargar retos</a></p>")
+        h.append("</body></html>")
+        return h.toString()
     }
 
     private fun challengeSection(h: StringBuilder, c: Challenge, text: String, a: Analysis) {
-        h.append("<p><b>${esc(c.title)}</b><br><span style='color:$muted'>${c.level.label} · ${esc(c.topic)}${if (c.minutes > 0) " · ${c.minutes} min" else ""} · ${esc(c.packName)}</span></p>")
+        h.append("<p><b>Reto: ${esc(c.title)}</b><br><span style='color:$muted'>${c.level.label} · ${esc(c.topic)}${if (c.minutes > 0) " · ${c.minutes} min" else ""} · ${esc(c.packName)}</span></p>")
         h.append("<p>${md(c.brief)}</p>")
         val met = a.objectivesMet
         val total = a.objectives.size
@@ -319,59 +662,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         if (met == total && changed) h.append("<p style='color:$ok'>Cumples todos los objetivos. Pide una revisión al tutor o compara con la solución.</p>")
         h.append("<p><a href='solution'>Ver solución de referencia</a> · <a href='restart'>Empezar de nuevo</a></p>")
     }
-
-    // ---------- pistas ----------
-    private fun hintSection(h: StringBuilder, file: VirtualFile) {
-        val s = tutor.hintSession(file)
-        val hints = s?.hints?.toList().orEmpty()
-        val next = tutor.nextHintLevel(file)
-        h.append("<p><b>Pistas</b> <span style='color:$muted'>· te guían sin darte la solución</span><br>")
-
-        val problems = tutor.ideProblems(file)
-        if (problems.isNotEmpty()) {
-            h.append("<span style='color:$muted'>El IDE marca ${problems.size} ${if (problems.size == 1) "error" else "errores"}:</span><br>")
-            problems.take(3).forEach { p ->
-                h.append("<a href='line:${p.line - 1}'>L${p.line}</a> <span style='color:$bad'>${esc(p.message)}</span><br>")
-            }
-        }
-
-        // Escalera: los escalones que ya usaste van en negrita.
-        h.append("<span style='color:$muted'>")
-        HintLevel.entries.forEachIndexed { i, l ->
-            if (i > 0) h.append(" → ")
-            h.append(if (hints.any { it.level == l }) "<b>${l.number}. ${l.label}</b>" else "${l.number}. ${l.label}")
-        }
-        h.append("</span><br>")
-
-        hints.forEach { hint ->
-            h.append("<a href='line:${hint.line - 1}'>L${hint.line}</a> <span style='color:$info'>${hint.level.number}. ${hint.level.label}</span> ${md(hint.text)}")
-            if (hint.redacted) h.append(" <span style='color:$muted'>(oculté un fragmento con código de tu ejercicio)</span>")
-            h.append("<br>")
-        }
-        if (hints.isNotEmpty() && s?.lastAuto == true) h.append("<span style='color:$muted'>El tutor en vivo te dio esta pista porque llevabas un rato sin avanzar.</span><br>")
-        s?.notice?.let { h.append("<span style='color:$warn'>${esc(it)}</span> <a href='hintforce'>Necesito otra pista igual</a><br>") }
-
-        when {
-            tutor.isHintBusy(file) -> h.append("<span style='color:$muted'>Pensando la pista ${next?.number ?: ""}…</span><br>")
-            s?.error != null -> h.append("<span style='color:$bad'>${esc(s.error!!)}</span> <a href='settings'>Ajustes</a><br>")
-            hints.isEmpty() -> h.append("<span style='color:$muted'>¿Atascado? Pide una pista: primero una pregunta, luego el concepto, la herramienta con un ejemplo de otros datos y los pasos.</span><br>")
-            next == null -> h.append("<span style='color:$muted'>Ya viste las ${HintLevel.entries.size} pistas. Inténtalo; si no sale, ríndete sin culpa.</span><br>")
-        }
-
-        val links = buildList {
-            if (!tutor.isHintBusy(file) && next != null) add("<a href='hint'>${if (hints.isEmpty()) "Dame una pista" else "Otra pista (${esc(next.label)})"}</a>")
-            if (!tutor.isGiveUpBusy(file)) add("<a href='giveup'>Me rindo</a>")
-            if (hints.isNotEmpty()) add("<a href='newproblem'>Nuevo problema</a>")
-            if (hints.isNotEmpty() && s?.showInEditor == true) add("<a href='hidehint'>Quitar del editor</a>")
-        }
-        h.append(links.joinToString(" · ")).append("</p>")
-
-        if (tutor.isGiveUpBusy(file)) h.append("<p style='color:$muted'>Preparando la solución explicada…</p>")
-        s?.giveUp?.let { h.append("<p><b>Solución explicada</b><br>${md(it)}</p><p><a href='handoff'>Copiar para preguntarle a Claude</a></p>") }
-    }
-
-    // ---------- plan ----------
-    private var showGuessCompare = false
 
     private fun planSection(h: StringBuilder) {
         val ctx = ProjectContext.getInstance(project)
@@ -445,7 +735,6 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         }
     }
 
-    // ---------- comprensión del código nuevo ----------
     private fun comprehensionSection(h: StringBuilder, file: VirtualFile?, text: String) {
         if (!settings.state.trackNewCode) return
         val ctx = ProjectContext.getInstance(project)
@@ -497,8 +786,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         OpenFileDescriptor(project, vf, b.startLine - 1, 0).navigate(true)
     }
 
-    // ---------- repaso ----------
-    private fun reviewSection(h: StringBuilder) {
+    private fun repasoSection(h: StringBuilder) {
         val profile = LearnerProfile.getInstance()
         val cards = profile.cards()
         val mastered = profile.mastered()
@@ -545,7 +833,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         val w = a.count(Severity.WARN)
         val s = a.count(Severity.INFO)
         val ms = String.format("%.2f", a.micros / 1000.0)
-        h.append("<p><b>Análisis local</b> <span style='color:$muted'>· $ms ms</span><br>")
+        h.append("<p><b>Análisis local</b> <span style='color:$muted'>· sin IA · $ms ms</span><br>")
         if (a.diagnostics.isEmpty()) {
             h.append("<span style='color:$muted'>Sin avisos. Revisa patrones y reglas del reto; los errores de compilación los marca el IDE.</span>")
         } else {
@@ -557,73 +845,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         h.append("</p>")
     }
 
-    private fun tutorSection(h: StringBuilder, file: VirtualFile, text: String, challenge: Challenge?, analysis: Analysis) {
-        h.append("<p><b>Tutor de IA</b> <span style='color:$muted'>· revisa <b>${esc(file.name)}</b></span><br>")
-        val others = tutor.filesUnderReview().filter { it != file.name }
-        if (others.isNotEmpty()) h.append("<span style='color:$muted'>También revisando: ${esc(others.joinToString())}</span><br>")
-        val fr = tutor.reviewFor(file)
-        when {
-            tutor.isBusy(file) -> h.append("<span style='color:$muted'>Revisando <b>${esc(file.name)}</b> con ${esc(settings.modelLabel())}…</span> <a href='cancel'>Detener</a><br>")
-            tutor.errorFor(file) != null -> h.append("<span style='color:$bad'>${esc(tutor.errorFor(file)!!)}</span> <a href='settings'>Ajustes</a><br>")
-            settings.state.liveMode && tutor.isWaitingForSyntax(file) -> h.append("<span style='color:$muted'>En vivo: esperando a que el archivo no tenga errores de sintaxis.</span><br>")
-        }
-        if (fr == null) {
-            if (!tutor.isBusy(file)) {
-                h.append("<span style='color:$muted'>Pulsa «Revisar ${esc(shortName(file))}» (⌘⌥⇧K) y el tutor comentará debajo de cada línea.</span><br>")
-                h.append("<span style='color:$muted'>${reviewEstimate(file, text, challenge, analysis)}</span>")
-            }
-            h.append("</p>")
-            return
-        }
-        val r = fr.review
-        val stColor = when (r.status) { "listo" -> ok; "desviado" -> bad; "a_medias" -> warn; else -> info }
-        h.append("<span style='color:$stColor'><b>${esc(r.statusLabel)}</b></span>")
-        h.append(" <span style='color:$muted'>· ${if (fr.auto) "en vivo" else "manual"} · ${ago(fr.at)}</span><br>")
-        fr.call?.let { h.append("<span style='color:$muted'>${callCost(it.usage.inputTokens, it.usage.outputTokens, it.costUsd, it.estimated)} · ${esc(fr.modelLabel)}</span><br>") }
-        if (r.summary.isNotBlank()) h.append(md(r.summary)).append("<br>")
-        h.append("</p><p>")
-        fr.comments.forEach { c ->
-            val line = if (c.marker.isValid) FileDocumentManager.getInstance().getDocument(file)?.getLineNumber(c.marker.startOffset) ?: 0 else 0
-            h.append("<a href='line:$line'>L${line + 1}</a> <span style='color:${typeColor(c.type)}'>${c.type.label}</span> ${md(c.message)}<br>")
-        }
-        h.append("</p>")
-        if (r.nextStep.isNotBlank()) h.append("<p><b>Siguiente paso:</b> ${md(r.nextStep)}</p>")
-        h.append("<p style='color:$muted'>")
-        if (fr.stale) h.append("Cambiaste el código desde esta revisión. ${reviewEstimate(file, text, challenge, analysis)}<br>")
-        h.append("<a href='clear'>Quitar comentarios del editor</a></p>")
-    }
-
-    // ---------- archivo actual ----------
-    private fun shortName(file: VirtualFile) = file.name.let { if (it.length > 28) it.take(25) + "…" else it }
-
-    private fun fileHeader(h: StringBuilder, file: VirtualFile?, isKotlin: Boolean) {
-        if (file == null) {
-            h.append("<p style='color:$muted'>Ningún archivo abierto en el editor.</p>")
-            return
-        }
-        val where = when {
-            ScratchUtil.isScratch(file) -> "archivo de borrador del IDE"
-            else -> project.basePath?.let { base -> file.parent?.path?.removePrefix(base)?.trimStart('/') }?.ifBlank { "raíz del proyecto" } ?: file.parent?.path.orEmpty()
-        }
-        val color = if (isKotlin) info else muted
-        h.append("<p><span style='color:$color'>▶</span> Archivo: <b>${esc(file.name)}</b><br><span style='color:$muted'>${esc(where)}")
-        if (!isKotlin) h.append(" · el tutor solo revisa archivos <code>.kt</code>")
-        h.append("</span></p>")
-    }
-
-    /** Cuánto costaría revisar el archivo ahora, calculado con el mismo texto que se enviaría. */
-    private fun reviewEstimate(file: VirtualFile, text: String, challenge: Challenge?, analysis: Analysis): String {
-        val o = settings.promptOptions()
-        val input = UsageMath.estimateTokens(Prompts.reviewSystem(o) + Prompts.reviewUser(challenge, text, analysis, file.name))
-        val out = usage.session(UsageKind.REVIEW).avgOutput.takeIf { it > 0 }?.toInt() ?: UsageMath.TYPICAL_REVIEW_OUTPUT
-        return "Cada revisión de este archivo envía ≈ ${UsageMath.tokens(input.toLong())} tokens y recibe ≈ ${UsageMath.tokens(out.toLong())} · " + costOf(input, out)
-    }
-
-    private fun costOf(input: Int, output: Int): String = when {
-        settings.preset == ProviderPreset.OLLAMA -> "gratis (local)"
-        else -> settings.price()?.let { "≈ " + UsageMath.usd(it.cost(input, output)) } ?: "<a href='settings'>configura el precio</a> para ver el costo"
-    }
-
+    // ---------- pestaña «Consumo» ----------
     private fun callCost(input: Int, output: Int, cost: Double?, estimated: Boolean): String {
         val t = "${UsageMath.tokens(input.toLong())} entrada + ${UsageMath.tokens(output.toLong())} salida"
         val c = when {
@@ -637,38 +859,12 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun ago(at: Long): String {
         val s = (System.currentTimeMillis() - at) / 1000
         return when {
-            s < 10 -> "ahora"
-            s < 60 -> "hace $s s"
+            s < 60 -> "ahora"
             s < 3600 -> "hace ${s / 60} min"
             else -> "hace ${s / 3600} h"
         }
     }
 
-    // ---------- tutor en vivo ----------
-    private fun liveSection(h: StringBuilder, file: VirtualFile?) {
-        val s = settings.state
-        h.append("<p><b>Tutor en vivo</b> <span style='color:$ok'>activo</span><br>")
-        h.append("<span style='color:$muted'>Vigila el archivo <code>.kt</code> que estás editando")
-        if (file != null) h.append(" (ahora <b>${esc(file.name)}</b>)")
-        h.append(". Actúa cuando dejas de escribir ${String.format("%.1f", s.liveDelayMs / 1000.0)} s:<br>")
-        h.append("· con errores o un <code>TODO()</code>, si llevas ${s.stuckAfterSec} s sin reducirlos, te da una pista;<br>")
-        h.append("· sin errores, revisa tu enfoque, como máximo una vez cada ${s.minIntervalSec} s y solo si el código cambió.<br>")
-        h.append("Cada pista cuesta poco (≈ una revisión corta); cada revisión en vivo cuesta lo mismo que una manual.</span><br>")
-        when {
-            file == null -> {}
-            tutor.isBusy(file) -> h.append("<span style='color:$info'>Revisando ahora…</span>")
-            tutor.isHintBusy(file) -> h.append("<span style='color:$info'>Preparando una pista…</span>")
-            tutor.isWaitingStuck(file) -> h.append("<span style='color:$info'>Hay errores: si en ${s.stuckAfterSec} s no avanzas, te doy una pista.</span>")
-            tutor.isLiveScheduled(file) -> h.append("<span style='color:$info'>Programado: esperando a que hagas la pausa o pase el intervalo mínimo.</span>")
-            tutor.isWaitingForSyntax(file) -> h.append("<span style='color:$warn'>Hay errores de sintaxis: pide una pista si no sabes cómo seguir.</span>")
-            else -> h.append("<span style='color:$muted'>Sin cambios pendientes.</span>")
-        }
-        val live = usage.session(UsageKind.LIVE)
-        if (live.calls > 0) h.append("<br><span style='color:$muted'>Esta sesión: ${live.calls} ${if (live.calls == 1) "revisión" else "revisiones"} en vivo · ${statsCost(live)}</span>")
-        h.append("</p>")
-    }
-
-    // ---------- consumo ----------
     private fun statsCost(st: UsageStats): String {
         val t = "${UsageMath.tokens(st.inputTokens + st.outputTokens)} tokens"
         return when {
@@ -679,9 +875,10 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         }
     }
 
-    private fun usageSection(h: StringBuilder) {
+    private fun usageHtml(): String {
+        val h = StringBuilder("<html><body>")
         val p = settings.preset
-        h.append("<p><b>Consumo de la API</b> <span style='color:$muted'>· ${esc(p.label)}</span><br>")
+        h.append("<p><b>Consumo de la API</b> <span style='color:$muted'>· ${esc(settings.modelLabel())} · <a href='settings'>cambiar</a></span><br>")
 
         // Saldo
         when {
@@ -741,46 +938,32 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         if (settings.price() == null && p != ProviderPreset.OLLAMA && p != ProviderPreset.OPENROUTER) {
             h.append("<br><span style='color:$muted'>Para ver el costo en dólares, <a href='settings'>escribe el precio de tu modelo</a>.</span>")
         }
-        h.append("</p>")
+        h.append("</p></body></html>")
+        return h.toString()
     }
 
-    private fun chatSection(h: StringBuilder, file: VirtualFile?) {
-        val msgs = tutor.chatFor(file)
-        h.append("<p><b>Chat con el tutor</b>")
-        if (msgs.isNotEmpty()) h.append(" <span style='color:$muted'>· <a href='clearchat'>borrar</a></span>")
-        h.append("</p>")
-        if (msgs.isEmpty()) {
-            h.append("<p style='color:$muted'>Prueba con: ")
-            listOf("¿Por qué no debería usar un for aquí?", "¿Qué me preguntaría un entrevistador sobre este código?", "Dame una pista sin darme la solución").forEachIndexed { i, q ->
-                if (i > 0) h.append(" · ")
-                h.append("<a href='ask:${URLEncoder.encode(q, Charsets.UTF_8)}'>${esc(q)}</a>")
-            }
-            h.append("</p>")
-        }
-        msgs.forEach { m ->
-            if (m.role == "user") h.append("<p><b>Tú:</b> ${md(m.content)}</p>")
-            else h.append("<p><b style='color:$info'>Tutor:</b> ${md(m.content)}</p>")
-        }
-        if (tutor.isChatBusy(file)) h.append("<p style='color:$muted'>El tutor está escribiendo…</p>")
-    }
-
+    // ---------- enlaces ----------
     private fun onLink(desc: String) {
         val file = currentFile()
+        val kotlin = file?.takeIf { TutorService.isKotlin(it) }
         val challenge = file?.let { f -> FileDocumentManager.getInstance().getDocument(f)?.let { repo.challengeFor(it.text) } }
         when {
             desc.startsWith("line:") -> file?.let { OpenFileDescriptor(project, it, desc.removePrefix("line:").toIntOrNull() ?: 0, 0).navigate(true) }
-            desc.startsWith("ask:") -> tutor.ask(file?.takeIf { TutorService.isKotlin(it) }, URLDecoder.decode(desc.removePrefix("ask:"), Charsets.UTF_8))
+            desc.startsWith("ask:") -> tutor.ask(kotlin, URLDecoder.decode(desc.removePrefix("ask:"), Charsets.UTF_8))
+            desc.startsWith("reply:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("reply:"))?.let { setReplying(f to it) } }
+            desc.startsWith("resolve:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("resolve:"))?.let { tutor.resolveComment(f, it) } }
+            desc == "guideok" -> { settings.state.guideDismissed = true; scheduleRefresh() }
+            desc == "review" -> reviewNow()
             desc == "solution" -> challenge?.let { ChallengeFiles.openSolution(project, it) }
             desc == "restart" -> if (file != null && challenge != null) restart(file, challenge)
             desc == "settings" -> openSettings()
             desc == "cancel" -> file?.let(tutor::cancelReview)
             desc == "clear" -> file?.let(tutor::clearReview)
-            desc == "hint" -> file?.takeIf { TutorService.isKotlin(it) }?.let(tutor::requestHint)
-            desc == "giveup" -> file?.takeIf { TutorService.isKotlin(it) }?.let(::giveUpDialog)
+            desc == "hint" -> kotlin?.let(tutor::requestHint)
             desc == "handoff" -> file?.let(tutor::copyHandoff)
             desc == "newproblem" -> file?.let(tutor::resetHints)
             desc == "hidehint" -> file?.let(tutor::hideHintInEditor)
-            desc == "hintforce" -> file?.takeIf { TutorService.isKotlin(it) }?.let { tutor.requestHint(it, force = true) }
+            desc == "hintforce" -> kotlin?.let { tutor.requestHint(it, force = true) }
             desc.startsWith("plan:") -> {
                 val ctx = ProjectContext.getInstance(project)
                 when (desc.removePrefix("plan:")) {
@@ -811,7 +994,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             desc.startsWith("open:") -> BrowserUtil.browse(desc.removePrefix("open:"))
             desc == "balance" -> tutor.refreshBalance()
             desc == "resetusage" -> if (Messages.showYesNoDialog(project, "¿Reiniciar el contador de consumo acumulado?", "Consumo de la API", null) == Messages.YES) usage.resetTotals()
-            desc == "clearchat" -> tutor.clearChat(file?.takeIf { TutorService.isKotlin(it) })
+            desc == "clearchat" -> tutor.clearChat(kotlin)
             desc == "reload" -> {
                 val w = repo.reload()
                 fillChallenges(levelBox.selectedItem as? Level ?: Level.JUNIOR)

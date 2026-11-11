@@ -10,7 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Al abrir el proyecto: activa el modo en vivo, empieza a seguir el plan y el código nuevo según git,
+ * Al abrir el proyecto: prepara el tutor (apagado en todos los archivos hasta que lo enciendas), empieza a seguir el plan y el código nuevo según git,
  * y ofrece el repaso del día si toca.
  */
 class CoachStartup : ProjectActivity {

@@ -71,10 +71,11 @@ class CoachAiAnnotator : ExternalAnnotator<List<CoachAiAnnotator.Item>, List<Coa
 
     private fun collect(file: PsiFile): List<Item>? {
         val vf = file.virtualFile ?: return null
-        val review = TutorService.getInstance(file.project).reviewFor(vf) ?: return null
+        val comments = TutorService.getInstance(file.project).commentsInEditor(vf)
+        if (comments.isEmpty()) return null
         val doc = file.viewProvider.document ?: return null
         val chars = doc.charsSequence
-        return review.comments.filter { it.marker.isValid && it.type != CommentType.BIEN }.map { c ->
+        return comments.filter { it.marker.isValid && it.type != CommentType.BIEN }.map { c ->
             val line = doc.getLineNumber(c.marker.startOffset)
             var s = doc.getLineStartOffset(line)
             var e = doc.getLineEndOffset(line)
