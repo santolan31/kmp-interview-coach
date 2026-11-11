@@ -1,7 +1,8 @@
 <idea-plugin>
     <id>dev.kmpcoach.interview-coach</id>
-    <name>KMP Interview Coach</name>
-    <vendor>KMP Interview Coach</vendor>
+    <!-- El id de arriba no cambia nunca: si cambiara, Android Studio lo vería como otro plugin y no llegarían las actualizaciones. -->
+    <name>Mentor</name>
+    <vendor>Mentor</vendor>
 
     <description><![CDATA[
     <p>Un tutor de IA dentro del IDE que te ayuda a entender el código que escribes en Android y Kotlin Multiplatform, sin darte la solución. Usa tu propia API de IA.</p>
@@ -35,11 +36,11 @@
         <!-- Pista en gris: Tab pide la siguiente y Esc la oculta; si no hay pista, Tab y Esc funcionan como siempre. -->
         <editorActionHandler action="EditorTab" implementationClass="dev.kmpcoach.ide.GhostTabHandler" order="first"/>
         <editorActionHandler action="EditorEscape" implementationClass="dev.kmpcoach.ide.GhostEscapeHandler" order="first"/>
-        <applicationConfigurable parentId="tools" id="dev.kmpcoach.settings" displayName="KMP Interview Coach"
+        <applicationConfigurable parentId="tools" id="dev.kmpcoach.settings" displayName="Mentor"
                                  instance="dev.kmpcoach.ide.CoachConfigurable"/>
-        <toolWindow id="KMP Coach" anchor="right" icon="/icons/coach.svg"
+        <toolWindow id="Mentor" anchor="right" icon="/icons/coach.svg"
                     factoryClass="dev.kmpcoach.ide.ui.CoachToolWindowFactory"/>
-        <notificationGroup id="KMP Interview Coach" displayType="BALLOON"/>
+        <notificationGroup id="Mentor" displayType="BALLOON"/>
         <postStartupActivity implementation="dev.kmpcoach.ide.CoachStartup"/>
     </extensions>
 
@@ -54,19 +55,19 @@
     </projectListeners>
 
     <actions>
-        <group id="KmpCoach.Group" text="KMP Coach" popup="true" icon="/icons/coach.svg">
+        <group id="KmpCoach.Group" text="Mentor" popup="true" icon="/icons/coach.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <!-- Interruptor por archivo: también va como botón en la barra de pestañas del editor. -->
             <action id="KmpCoach.ToggleTutor" class="dev.kmpcoach.ide.ToggleTutorAction"
-                    text="Encender o apagar el tutor en este archivo"
-                    description="Apagado, el tutor no hace nada por su cuenta en este archivo; encendido, te acompaña y te da una pista si te atascas">
+                    text="Encender o apagar el Mentor en este archivo"
+                    description="Apagado, el Mentor no hace nada por su cuenta en este archivo; encendido, te acompaña y te da una pista si te atascas">
                 <add-to-group group-id="EditorTabActionGroup" anchor="first"/>
                 <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift Y"/>
                 <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift T" replace-all="true"/>
             </action>
             <action id="KmpCoach.ReviewNow" class="dev.kmpcoach.ide.ReviewNowAction"
-                    text="Revisar con el tutor IA" description="El tutor revisa este archivo y comenta debajo de las líneas">
+                    text="Revisar con el Mentor" description="El tutor revisa este archivo y comenta debajo de las líneas">
                 <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift K"/>
                 <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift K" replace-all="true"/>
             </action>

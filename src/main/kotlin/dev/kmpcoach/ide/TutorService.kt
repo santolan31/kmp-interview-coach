@@ -957,8 +957,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     }
 
     companion object {
-        const val TOOL_WINDOW_ID = "KMP Coach"
-        const val NOTIFICATION_GROUP = "KMP Interview Coach"
+        const val TOOL_WINDOW_ID = "Mentor"
+        const val NOTIFICATION_GROUP = "Mentor"
         fun getInstance(project: Project): TutorService = project.service()
         fun isKotlin(file: VirtualFile) = file.extension.equals("kt", true)
 

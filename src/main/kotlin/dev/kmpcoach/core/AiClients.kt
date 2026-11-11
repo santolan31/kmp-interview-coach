@@ -84,9 +84,9 @@ object AiClients {
 
     /** Devuelve un mensaje si la configuración está incompleta, o null si se puede usar. */
     fun validate(cfg: AiConfig): String? = when {
-        cfg.baseUrl.isBlank() -> "Falta la URL base del proveedor. Configúrala en Ajustes › Herramientas › KMP Interview Coach."
-        cfg.preset.needsKey && cfg.apiKey.isNullOrBlank() -> "Falta la clave de API de ${cfg.preset.label}. Agrégala en Ajustes › Herramientas › KMP Interview Coach."
-        cfg.model.isBlank() -> "Elige un modelo en Ajustes › Herramientas › KMP Interview Coach (el botón «Cargar modelos» te muestra los disponibles)."
+        cfg.baseUrl.isBlank() -> "Falta la URL base del proveedor. Configúrala en Ajustes › Herramientas › Mentor."
+        cfg.preset.needsKey && cfg.apiKey.isNullOrBlank() -> "Falta la clave de API de ${cfg.preset.label}. Agrégala en Ajustes › Herramientas › Mentor."
+        cfg.model.isBlank() -> "Elige un modelo en Ajustes › Herramientas › Mentor, o desde el panel del Mentor (el botón «Cargar modelos» te muestra los disponibles)."
         else -> null
     }
 
@@ -211,7 +211,7 @@ private class OpenAiCompatibleClient(private val cfg: AiConfig, private val http
             .timeout(Duration.ofSeconds(cfg.timeoutSeconds))
             .header("content-type", "application/json")
         if (!cfg.apiKey.isNullOrBlank()) b.header("authorization", "Bearer ${cfg.apiKey}")
-        if (cfg.preset == ProviderPreset.OPENROUTER) b.header("X-Title", "KMP Interview Coach")
+        if (cfg.preset == ProviderPreset.OPENROUTER) b.header("X-Title", "Mentor")
         return b
     }
 

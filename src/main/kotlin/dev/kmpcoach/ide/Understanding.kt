@@ -62,7 +62,7 @@ class UnderstandingGutter(private val block: CodeBlock, private val startLine: I
     override fun getIcon(): Icon = AllIcons.General.ContextHelp
 
     override fun getTooltipText(): String =
-        "<html><b>KMP Coach · código nuevo sin comprobar</b> (líneas $startLine–$endLine)<br>" +
+        "<html><b>Mentor · código nuevo sin comprobar</b> (líneas $startLine–$endLine)<br>" +
             "Este bloque es nuevo según git (lo escribieras tú o una IA). Haz clic para comprobar que entiendes qué hace:<br>" +
             "predecir su resultado o explicarlo sin mirarlo. Si no hace falta, márcalo y desaparece.</html>"
 
@@ -82,11 +82,11 @@ class UnderstandingGutter(private val block: CodeBlock, private val startLine: I
         private const val PREDICT = "Predecir qué hace con un ejemplo"
         private const val EXPLAIN = "Explicarlo sin mirarlo (se pliega)"
         private const val IGNORE = "No necesita revisión (generado o configuración)"
-        private const val TURN_OFF = "No mostrar estas marcas (se reactivan en Ajustes › KMP Coach)"
+        private const val TURN_OFF = "No mostrar estas marcas (se reactivan en Ajustes › Mentor)"
 
         fun showChoices(project: Project, block: CodeBlock, e: AnActionEvent?) {
             val popup = JBPopupFactory.getInstance().createPopupChooserBuilder(listOf(PREDICT, EXPLAIN, IGNORE, TURN_OFF))
-                .setTitle("KMP Coach · ¿Entiendes este código nuevo? (${block.lineCount} líneas)")
+                .setTitle("Mentor · ¿Entiendes este código nuevo? (${block.lineCount} líneas)")
                 .setItemChosenCallback { choice ->
                     val learning = LearningService.getInstance(project)
                     when (choice) {

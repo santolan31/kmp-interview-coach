@@ -48,7 +48,7 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
 
         when {
             cur.complete -> {
-                panel.text = "✓ $head completo" + if (verdict?.ok == true) " · el tutor lo confirma" else ""
+                panel.text = "✓ $head completo" + if (verdict?.ok == true) " · el Mentor lo confirma" else ""
                 val next = view.next
                 if (next != null) {
                     val where = next.edits.firstOrNull()?.fileName?.let { " · $it" }.orEmpty()
@@ -68,11 +68,11 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
                 panel.createActionLabel("Ir ›") { guide.goTo(target) }
             }
             verifying -> {
-                panel.text = "$head · Comprobando con el tutor…"
+                panel.text = "$head · Comprobando con el Mentor…"
             }
             verdict != null && !verdict.ok -> {
                 val more = verdict.gaps.size - 1
-                panel.text = "$head · El tutor dice que falta: ${clip(verdict.missing.ifBlank { "algo del paso" }, 80)}" +
+                panel.text = "$head · El Mentor dice que falta: ${clip(verdict.missing.ifBlank { "algo del paso" }, 80)}" +
                     (if (more > 0) " (y $more más)" else "") + " · marcado en rojo en el código"
                 val gapHere = verdict.gaps.firstOrNull { (it.file == null || it.file == file.name) && it.line != null }
                 if (gapHere != null) panel.createActionLabel("Ir a lo que falta") { guide.goToLine(file, gapHere.line!! - 1) }

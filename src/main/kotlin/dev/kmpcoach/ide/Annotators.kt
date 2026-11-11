@@ -52,9 +52,9 @@ class CoachLocalAnnotator : ExternalAnnotator<CoachLocalAnnotator.Input, List<Di
             if (d.from >= length) continue
             val range = TextRange(d.from, maxOf(d.to, d.from + 1).coerceAtMost(length))
             val severity = if (d.severity == Severity.ERROR) HighlightSeverity.WARNING else HighlightSeverity.WEAK_WARNING
-            holder.newAnnotation(severity, "Coach · ${d.severity.label}: ${plain(d.message)}")
+            holder.newAnnotation(severity, "Mentor · ${d.severity.label}: ${plain(d.message)}")
                 .range(range)
-                .tooltip(html("Coach · ${d.severity.label}:", d.message))
+                .tooltip(html("Mentor · ${d.severity.label}:", d.message))
                 .withFix(AskTutorFix("El analizador marcó esto en la línea ${d.line + 1}: «${plain(d.message)}». ¿Por qué es un problema en mi código y cómo lo pienso?"))
                 .create()
         }
@@ -101,12 +101,12 @@ class CoachAiAnnotator : ExternalAnnotator<List<CoachAiAnnotator.Item>, List<Coa
 }
 
 /**
- * Alt+Enter → «Coach: preguntarle al tutor». Si [question] termina en «: » solo la escribe en el chat;
+ * Alt+Enter → «Mentor: preguntarle por qué». Si [question] termina en «: » solo la escribe en el chat;
  * si no, la envía directamente.
  */
 class AskTutorFix(private val question: String) : IntentionAction, LowPriorityAction {
-    override fun getText() = "Coach: preguntarle al tutor por qué"
-    override fun getFamilyName() = "KMP Interview Coach"
+    override fun getText() = "Mentor: preguntarle por qué"
+    override fun getFamilyName() = "Mentor"
     override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?) = true
     override fun startInWriteAction() = false
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {

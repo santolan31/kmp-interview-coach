@@ -126,7 +126,7 @@ private class RoundedBox : JPanel(BorderLayout()) {
 
 /**
  * Panel lateral con tres pestañas:
- * - «Tutor»: la conversación del archivo actual (revisiones, pistas y chat, en orden de llegada), el interruptor del
+ * - «Conversación»: la conversación del archivo actual (revisiones, pistas y chat, en orden de llegada), el interruptor del
  *   tutor y la caja para escribir.
  * - «Progreso»: plan, retos, comprensión del código nuevo, repaso y análisis local.
  * - «Consumo»: uso y costo de la API.
@@ -149,7 +149,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val reviewLink = ActionLink("Revisar archivo") { reviewNow() }
     private val giveUpLink = ActionLink("Me rindo") { currentKotlin()?.let(::giveUpDialog) }
     private val sendButton = JButton("Enviar")
-    private val modelLink = ActionLink("") { openSettings() }
+    private val modelLink = ActionLink("") { chooseModel() }
+    @Volatile private var loadingModels = false
 
     // Pestaña «Progreso»
     private val progress = htmlPane()
@@ -176,7 +177,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         fillChallenges(level)
         levelBox.addActionListener { if (!syncing) (levelBox.selectedItem as? Level)?.let(::fillChallenges) }
 
-        tabs.addTab("Tutor", tutorTab())
+        tabs.addTab("Conversación", tutorTab())
         tabs.addTab("Progreso", progressTab())
         tabs.addTab("Consumo", usageScroll)
         setContent(tabs)
@@ -248,7 +249,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             add(fileLabel, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply {
                 isOpaque = false
-                add(JBLabel("Tutor"))
+                add(JBLabel("Mentor"))
                 add(tutorSwitch)
             }, BorderLayout.EAST)
             add(statusLabel, BorderLayout.SOUTH)
@@ -293,7 +294,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             add(actions, BorderLayout.SOUTH)
         }
 
-        modelLink.toolTipText = "Modelo de IA que responde. Pulsa para cambiarlo."
+        modelLink.toolTipText = "Modelo de IA que responde. Pulsa para elegir otro de tu proveedor."
         val footer = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
             isOpaque = false
             border = JBUI.Borders.emptyTop(4)
@@ -355,6 +356,63 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     }
 
     private fun openSettings() = ShowSettingsUtil.getInstance().showSettingsDialog(project, CoachConfigurable::class.java)
+
+    /**
+     * Cambia el modelo sin abrir los Ajustes: pide a tu proveedor la lista de modelos y la muestra para filtrar y elegir.
+     * La clave se lee del almacén seguro y la lista llega por red: todo fuera del hilo de la interfaz.
+     */
+    private fun chooseModel() {
+        if (loadingModels) return
+        loadingModels = true
+        modelLink.text = "Cargando modelos…"
+        val app = ApplicationManager.getApplication()
+        fun done(models: List<String>, error: String?) = app.invokeLater {
+            loadingModels = false
+            if (project.isDisposed) return@invokeLater
+            modelLink.text = settings.modelLabel() + " ▾"
+            showModelPopup(models, error)
+        }
+        app.executeOnPooledThread {
+            val cfg = runCatching { settings.aiConfig() }.getOrNull()
+            val invalid = cfg?.let { AiClients.validate(it.copy(model = it.model.ifBlank { "x" })) }
+            if (cfg == null || invalid != null) return@executeOnPooledThread done(emptyList(), invalid ?: "No pude leer la configuración del proveedor.")
+            AiClients.create(cfg).listModels().whenComplete { models, err ->
+                done(models.orEmpty().sorted(), err?.let { AiClients.friendly(it, cfg) })
+            }
+        }
+    }
+
+    private fun showModelPopup(models: List<String>, error: String?) {
+        val current = settings.state.model.orEmpty().ifBlank { settings.preset.defaultModel }
+        val type = "Escribir el nombre de otro modelo…"
+        val more = "Cambiar de proveedor, clave o precio…"
+        val mark = "✓ "
+        val items = buildList {
+            if (current.isNotBlank()) add(mark + current)
+            addAll(models.filter { it != current })
+            add(type)
+            add(more)
+        }
+        JBPopupFactory.getInstance().createPopupChooserBuilder(items)
+            .setTitle(if (error != null) "No pude cargar la lista: $error" else "Modelo de ${settings.preset.label}")
+            .setNamerForFiltering { it }
+            .setItemChosenCallback { choice ->
+                when (choice) {
+                    more -> openSettings()
+                    type -> Messages.showInputDialog(project, "Nombre exacto del modelo (por ejemplo claude-haiku-5-5):", "Modelo", null, current, null)
+                        ?.trim()?.takeIf { it.isNotEmpty() }?.let(::setModel)
+                    else -> setModel(choice.removePrefix(mark))
+                }
+            }
+            .createPopup()
+            .showUnderneathOf(modelLink)
+    }
+
+    private fun setModel(model: String) {
+        settings.state.model = model
+        modelLink.text = settings.modelLabel() + " ▾"
+        scheduleRefresh()
+    }
 
     private fun reviewNow() {
         currentKotlin()?.let(tutor::requestReview)
@@ -484,7 +542,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         reviewLink.toolTipText = "El tutor comenta debajo de las líneas de este archivo" + shortcutNote("KmpCoach.ReviewNow")
         giveUpLink.isEnabled = file != null && !tutor.isGiveUpBusy(file)
         sendButton.isEnabled = !tutor.isChatBusy(file)
-        modelLink.text = settings.modelLabel()
+        if (!loadingModels) modelLink.text = settings.modelLabel() + " ▾"
     }
 
     private fun statusText(file: VirtualFile?): String {
@@ -523,15 +581,15 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
                     if (hintIndex == totalHints && session?.lastAuto == true) {
                         body.append("<br><span style='color:$muted'>Te la di porque llevabas un rato sin avanzar.</span>")
                     }
-                    h.append(entry(head("Tutor · pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}") + card(info, body.toString())))
+                    h.append(entry(head("Mentor · pista ${hint.level.number}/${HintLevel.entries.size} · ${hint.level.label}") + card(info, body.toString())))
                 }
                 is TutorService.Entry.GiveUp -> h.append(entry(
-                    head("Tutor · solución explicada") + md(e.text) +
+                    head("Mentor · solución explicada") + md(e.text) +
                         "<div style='margin-top:4px'><a href='handoff'>Copiar para preguntarle a Claude</a></div>"
                 ))
                 is TutorService.Entry.Chat ->
                     if (e.message.role == "user") h.append(entry(bubble(md(e.message.content))))
-                    else h.append(entry(head("Tutor") + md(e.message.content)))
+                    else h.append(entry(head("Mentor") + md(e.message.content)))
             }
         }
 
@@ -542,10 +600,10 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         session?.error?.let { h.append(entry("<span style='color:$bad'>${esc(it)}</span> <a href='settings'>Ajustes</a>")) }
         tutor.errorFor(file)?.let { h.append(entry("<span style='color:$bad'>${esc(it)}</span> <a href='settings'>Ajustes</a>")) }
         when {
-            tutor.isHintBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · pensando la pista…</span>"))
-            tutor.isBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · revisando ${esc(file?.name.orEmpty())}…</span> <a href='cancel'>Detener</a>"))
-            tutor.isGiveUpBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · preparando la solución explicada…</span>"))
-            tutor.isChatBusy(file) -> h.append(entry("<span style='color:$muted'>Tutor · escribiendo…</span>"))
+            tutor.isHintBusy(file) -> h.append(entry("<span style='color:$muted'>Mentor · pensando la pista…</span>"))
+            tutor.isBusy(file) -> h.append(entry("<span style='color:$muted'>Mentor · revisando ${esc(file?.name.orEmpty())}…</span> <a href='cancel'>Detener</a>"))
+            tutor.isGiveUpBusy(file) -> h.append(entry("<span style='color:$muted'>Mentor · preparando la solución explicada…</span>"))
+            tutor.isChatBusy(file) -> h.append(entry("<span style='color:$muted'>Mentor · escribiendo…</span>"))
         }
 
         val links = buildList {
@@ -610,7 +668,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         }
         val body = StringBuilder()
         body.append("<b>Cómo usar el tutor en este archivo</b><br><br>")
-        body.append("<b>1. Enciéndelo cuando lo necesites.</b> Interruptor de arriba, botón «Tutor» junto a las pestañas del editor")
+        body.append("<b>1. Enciéndelo cuando lo necesites.</b> Interruptor de arriba, botón «Mentor» junto a las pestañas del editor")
         body.append(shortcutNote("KmpCoach.ToggleTutor")).append(". Te da una primera ayuda y luego solo habla si te atascas. Apagado, no aparece nada solo.<br><br>")
         body.append("<b>2. Pide lo que quieras, encendido o no.</b> <a href='hint'>Dame una pista</a>").append(shortcutNote("KmpCoach.Hint"))
         body.append(" te guía sin darte la solución. <a href='review'>Revisar archivo</a>").append(shortcutNote("KmpCoach.ReviewNow"))
@@ -623,7 +681,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
 
     private fun reviewEntry(h: StringBuilder, file: VirtualFile, fr: TutorService.FileReview) {
         val r = fr.review
-        val b = StringBuilder(head("Tutor · revisión de ${esc(file.name)} · ${ago(fr.at)}"))
+        val b = StringBuilder(head("Mentor · revisión de ${esc(file.name)} · ${ago(fr.at)}"))
         val stColor = when (r.status) { "listo" -> ok; "desviado" -> bad; "a_medias" -> warn; else -> info }
         b.append("<span style='color:$stColor'><b>${esc(r.statusLabel)}</b></span>")
         if (r.summary.isNotBlank()) b.append(" · ").append(md(r.summary))
@@ -632,10 +690,10 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             val body = StringBuilder("<a href='line:$line'>L${line + 1}</a> <b style='color:${typeColor(c.type)}'>${c.type.label}</b><br>${md(c.message)}")
             c.thread.forEach { m ->
                 body.append("<br>")
-                if (m.role == "user") body.append("<b>Tú:</b> ") else body.append("<b style='color:$info'>Tutor:</b> ")
+                if (m.role == "user") body.append("<b>Tú:</b> ") else body.append("<b style='color:$info'>Mentor:</b> ")
                 body.append(md(m.content))
             }
-            if (c.busy) body.append("<br><span style='color:$muted'>Tutor · pensando…</span>")
+            if (c.busy) body.append("<br><span style='color:$muted'>Mentor · pensando…</span>")
             when {
                 c.resolved -> body.append("<br><span style='color:$ok'>✓ Resuelto</span>")
                 c.type != CommentType.BIEN && !c.busy -> {
@@ -1022,7 +1080,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
                 fillChallenges(levelBox.selectedItem as? Level ?: Level.JUNIOR)
                 Messages.showInfoMessage(project,
                     if (w.isEmpty()) "Retos recargados: ${repo.all().size}." else "Retos recargados con advertencias:\n" + w.joinToString("\n"),
-                    "KMP Interview Coach")
+                    "Mentor")
                 scheduleRefresh()
             }
         }

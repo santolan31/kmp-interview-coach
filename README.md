@@ -1,4 +1,6 @@
-# KMP Interview Coach
+# Mentor
+
+> Antes se llamaba *KMP Interview Coach*. El nombre del repositorio y el id del plugin no cambian, para que las actualizaciones sigan llegando.
 
 Plugin para **Android Studio** e **IntelliJ IDEA** que te ayuda a **entender el código que escribes** (el tuyo o el que te generó una IA) mientras programas en Android y Kotlin Multiplatform. No te da el código: te guía con pistas, como en una prueba técnica. Cada persona usa **su propia API de IA**.
 
@@ -18,7 +20,7 @@ Cuando te atascas, pulsa **Dame una pista** (⌘⌥⇧J / Ctrl+Alt+Mayús+J). Ca
 - **Filtro anti-código:** si el modelo intenta darte el código de tu ejercicio, se le pide que lo reescriba; si insiste, ese fragmento se oculta.
 - **Me rindo:** te deja elegir entre ver la solución **explicada línea por línea** en el panel o **copiar un mensaje listo** (archivo, errores, pistas y código) para pegarlo en tu chat con Claude.
 - **Nuevo problema** reinicia la escalera. Si resuelves los errores, se reinicia sola.
-- **Explícame esto:** selecciona código y usa *clic derecho › KMP Coach › Explícame esto*. El tutor te hace 2 o 3 preguntas para comprobar que lo entiendes; respondes en el chat y te dice qué está bien sin darte la respuesta.
+- **Explícame esto:** selecciona código y usa *clic derecho › Mentor › Explícame esto*. El tutor te hace 2 o 3 preguntas para comprobar que lo entiendes; respondes en el chat y te dice qué está bien sin darte la respuesta.
 
 ## Aprender con IA sin quedarse atrás
 
@@ -34,7 +36,7 @@ La investigación con estudiantes que programan con IA ([Prather et al., 2024](h
 | **Ayuda que se retira** | Los conceptos que resuelves con poca ayuda pasan a «dominados» y sus pistas son más breves. | Efecto de inversión de la experiencia |
 | **Repaso espaciado** | Lo que te costó vuelve como una pregunta de 30 segundos al día siguiente, y luego cada vez más espaciado (1, 2, 4, 8… días). | Práctica de recuperación espaciada |
 
-Todo se activa o desactiva en **Ajustes › Herramientas › KMP Interview Coach › Aprendizaje**.
+Todo se activa o desactiva en **Ajustes › Herramientas › Mentor › Aprendizaje**.
 
 > Para que el tutor sepa qué estás haciendo, guarda en `docs/plans/` el plan que hagas con cualquier IA. No hace falta volver a contárselo.
 
@@ -47,7 +49,7 @@ Además, el plugin trabaja en dos capas mientras escribes:
 
 ## Proveedores de IA compatibles
 
-En **Ajustes › Herramientas › KMP Interview Coach** eliges el proveedor, pegas tu clave y eliges el modelo (el botón **Cargar modelos** muestra los que tu clave puede usar).
+En **Ajustes › Herramientas › Mentor** eliges el proveedor, pegas tu clave y eliges el modelo (el botón **Cargar modelos** muestra los que tu clave puede usar). El modelo también se cambia desde el panel: pulsa su nombre, abajo en la pestaña **Conversación**.
 
 | Proveedor | URL base | Clave |
 |---|---|---|
@@ -72,7 +74,7 @@ El plugin se publica en este repositorio como un **repositorio de plugins propio
    ```
    https://raw.githubusercontent.com/santolan31/kmp-interview-coach/main/updatePlugins.xml
    ```
-3. En la pestaña **Marketplace** busca **KMP Interview Coach** e instálalo.
+3. En la pestaña **Marketplace** busca **Mentor** e instálalo.
 
 Desde ahí, cuando se publique una versión nueva, Android Studio la muestra en **Settings › Plugins › Installed** con el botón **Update**, igual que cualquier plugin.
 
@@ -98,9 +100,9 @@ Compatibilidad: Android Studio Meerkat (2024.3) en adelante e IntelliJ IDEA 2024
 
 ## Cómo se usa
 
-El panel **KMP Coach** (barra lateral derecha) tiene tres pestañas: **Tutor** (la conversación del archivo que estás editando), **Progreso** (plan, retos, comprensión del código nuevo, repaso y análisis local) y **Consumo**.
+El panel **Mentor** (barra lateral derecha) tiene tres pestañas: **Conversación** (la conversación del archivo que estás editando), **Progreso** (plan, retos, comprensión del código nuevo, repaso y análisis local) y **Consumo**.
 
-1. **Enciende el tutor en el archivo cuando lo necesites.** Interruptor de la pestaña Tutor, botón **Tutor: apagado / activo** junto a las pestañas del editor, o ⌘⌥⇧T (Ctrl+Alt+Mayús+Y en Windows y Linux). Al abrir el IDE está apagado en todos los archivos.
+1. **Enciende el Mentor en el archivo cuando lo necesites.** Interruptor de la pestaña Conversación, botón **Mentor: apagado / activo** junto a las pestañas del editor, o ⌘⌥⇧T (Ctrl+Alt+Mayús+Y en Windows y Linux). Al abrir el IDE está apagado en todos los archivos.
    - Al encenderlo te da una primera ayuda: una pista si el IDE marca errores o hay un `TODO()`, o una revisión si el archivo no tiene errores.
    - Después solo habla si te atascas: con errores y un rato sin reducirlos (45 s por defecto), te da **una** pista.
    - Nunca reemplaza los comentarios de una revisión por su cuenta. Si cambias el código, el panel te avisa y tú pulsas **Actualizar revisión**.
@@ -115,7 +117,7 @@ El panel **KMP Coach** (barra lateral derecha) tiene tres pestañas: **Tutor** (
    - **Avanzar al paso siguiente**: cuando no quedan `TODO`, compila y lo que el paso reemplazaba ya no está, abre el archivo del siguiente paso con el tutor encendido.
 
    También le pasa a la revisión, las pistas y el chat un extracto del paso actual, para que juzguen solo eso. Se desactiva en **Ajustes › Aprendizaje**.
-5. **Pregunta.** Escribe en la caja, o usa **KMP Coach › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
+5. **Pregunta.** Escribe en la caja, o usa **Mentor › Preguntarle al tutor sobre esto** en el menú contextual del editor para preguntar por la selección.
 5. **Retos.** En la pestaña Progreso elige nivel y reto, y pulsa **Abrir**. Se crea un archivo de borrador `coach_<id>.kt` que empieza con `// coach:<id>`; esa línea le dice al plugin qué reto estás resolviendo. Los objetivos se marcan solos mientras escribes.
 
 El análisis local y el tutor también funcionan en **cualquier archivo Kotlin de tu proyecto**, no solo en los retos. Puedes desactivarlo para archivos que no sean retos en los ajustes.

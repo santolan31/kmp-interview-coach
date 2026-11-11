@@ -30,8 +30,8 @@ private enum class Lang(val id: String, val label: String) {
     companion object { fun of(id: String?) = entries.firstOrNull { it.id == id } ?: ES }
 }
 
-/** Ajustes › Herramientas › KMP Interview Coach: proveedor, clave, modelo y comportamiento del tutor. */
-class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
+/** Ajustes › Herramientas › Mentor: proveedor, clave, modelo y comportamiento del tutor. */
+class CoachConfigurable : BoundConfigurable("Mentor") {
 
     private val settings = CoachSettings.getInstance()
     private var shown: ProviderPreset = settings.preset
@@ -115,7 +115,7 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
                     "Sin precio, el panel muestra solo tokens. OpenRouter informa el costo real de cada llamada y no lo necesita."
             )
         }
-        group("Tutor") {
+        group("Mentor") {
             row("Tu nivel:") {
                 comboBox(Level.entries.toList())
                     .bindItem({ Level.of(settings.state.studentLevel) }, { settings.state.studentLevel = (it ?: Level.JUNIOR).id })
@@ -128,7 +128,7 @@ class CoachConfigurable : BoundConfigurable("KMP Interview Coach") {
                 intTextField(1..10).bindIntText({ settings.state.maxComments }, { settings.state.maxComments = it })
             }
             row {
-                comment("El tutor se enciende por archivo, con el interruptor del panel o el botón «Tutor» de la barra de pestañas del editor. " +
+                comment("El Mentor se enciende por archivo, con el interruptor del panel o el botón «Mentor» de la barra de pestañas del editor. " +
                     "Al abrir el IDE está apagado en todos los archivos. Los comentarios de una revisión no cambian hasta que pidas actualizarla.")
             }
             row("Con el tutor encendido, pausa antes de actuar (ms):") {

@@ -142,12 +142,12 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         val v = stored.second
         val fallback = here.firstNotNullOfOrNull { it.status.cursorLine } ?: (here.first().edit.line - 1).coerceAtLeast(0)
         if (v.ok) {
-            out += Marker(fallback, CommentType.BIEN, "Tutor", "Tu código cumple el ${step.label}.", stale)
+            out += Marker(fallback, CommentType.BIEN, "Mentor", "Tu código cumple el ${step.label}.", stale)
         } else {
             v.gaps.filter { it.file == null || it.file == file.name }.forEach { g ->
                 val line = g.line?.minus(1) ?: fallback
                 // Si la comprobación gratis ya marcó esa línea, no la repite.
-                if (out.none { it.line == line }) out += Marker(line, CommentType.ERROR, "Falta (tutor)", g.text, stale)
+                if (out.none { it.line == line }) out += Marker(line, CommentType.ERROR, "Falta (Mentor)", g.text, stale)
             }
         }
         return out

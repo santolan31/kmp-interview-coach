@@ -49,9 +49,9 @@ class TutorInlayRenderer(
         add(Segment(labelText ?: type.label, clean(message), accent()))
         replies.forEach { r ->
             if (r.role == "user") add(Segment("Tú", clean(r.content), YOU_COLOR))
-            else add(Segment("Tutor", clean(r.content), accent()))
+            else add(Segment("Mentor", clean(r.content), accent()))
         }
-        if (busy) add(Segment("Tutor", "pensando…", FOOTER_COLOR))
+        if (busy) add(Segment("Mentor", "pensando…", FOOTER_COLOR))
     }
 
     private val indentPx: Int = run {

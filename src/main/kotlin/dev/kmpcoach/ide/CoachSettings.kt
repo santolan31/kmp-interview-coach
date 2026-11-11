@@ -89,6 +89,7 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
 }
 
 object CoachSecrets {
+    // Nombre antiguo a propósito: es donde ya están guardadas las claves. Si cambiara, el plugin no las encontraría.
     private fun attributes(p: ProviderPreset) = CredentialAttributes(generateServiceName("KMP Interview Coach", p.id))
     fun get(p: ProviderPreset): String? = PasswordSafe.instance.getPassword(attributes(p))
     fun set(p: ProviderPreset, key: String?) = PasswordSafe.instance.setPassword(attributes(p), key?.trim()?.ifEmpty { null })

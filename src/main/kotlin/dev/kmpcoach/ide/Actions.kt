@@ -11,8 +11,8 @@ import com.intellij.openapi.util.IconLoader
 private fun AnActionEvent.kotlinFile() = getData(CommonDataKeys.VIRTUAL_FILE)?.takeIf { TutorService.isKotlin(it) }
 
 /**
- * Interruptor del tutor en el archivo actual. Aparece como botón «Tutor: activo / apagado» en la barra de pestañas
- * del editor, en el menú KMP Coach y con atajo. Apagado, el tutor no hace nada por su cuenta en ese archivo.
+ * Interruptor del Mentor en el archivo actual. Aparece como botón «Mentor: activo / apagado» en la barra de pestañas
+ * del editor, en el menú Mentor y con atajo. Apagado, el tutor no hace nada por su cuenta en ese archivo.
  */
 class ToggleTutorAction : AnAction(), DumbAware {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
@@ -24,9 +24,9 @@ class ToggleTutorAction : AnAction(), DumbAware {
         val on = TutorService.getInstance(project).isTutorOn(file)
         // En la barra se lee como estado; en un menú, como la acción que vas a hacer.
         e.presentation.text = when {
-            e.isFromActionToolbar -> if (on) "Tutor: activo" else "Tutor: apagado"
-            on -> "Apagar el tutor en este archivo"
-            else -> "Encender el tutor en este archivo"
+            e.isFromActionToolbar -> if (on) "Mentor: activo" else "Mentor: apagado"
+            on -> "Apagar el Mentor en este archivo"
+            else -> "Encender el Mentor en este archivo"
         }
         e.presentation.description =
             if (on) "El tutor acompaña este archivo: te da una pista si te atascas. Pulsa para apagarlo."
