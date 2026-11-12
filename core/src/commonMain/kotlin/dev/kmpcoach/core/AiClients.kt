@@ -1,7 +1,11 @@
 package dev.kmpcoach.core
 
-/** [CLI]: la suscripción a través del programa de terminal del servicio (ver [CliClient]). */
-enum class ProviderKind { ANTHROPIC, OPENAI_COMPATIBLE, CLI }
+/**
+ * [CLI]: la suscripción a través del programa de terminal del servicio (ver [CliClient]).
+ * [EDITOR]: la suscripción la pone el propio editor (la API de modelos de VS Code con GitHub Copilot). El core no la
+ * llama: arma los prompts y lee las respuestas, pero el envío lo hace la extensión.
+ */
+enum class ProviderKind { ANTHROPIC, OPENAI_COMPATIBLE, CLI, EDITOR }
 
 /** Proveedores listos para usar. Todos los compatibles con OpenAI comparten el mismo cliente. */
 enum class ProviderPreset(
@@ -22,9 +26,13 @@ enum class ProviderPreset(
     OLLAMA("ollama", "Ollama (local, sin clave)", ProviderKind.OPENAI_COMPATIBLE, "http://localhost:11434/v1", "", false),
     CUSTOM("custom", "Otro compatible con OpenAI", ProviderKind.OPENAI_COMPATIBLE, "", "", false),
     CLAUDE_CLI("claude-cli", CliTool.CLAUDE.label, ProviderKind.CLI, "", "", false, CliTool.CLAUDE),
-    CURSOR_CLI("cursor-cli", CliTool.CURSOR.label, ProviderKind.CLI, "", "", false, CliTool.CURSOR);
+    CURSOR_CLI("cursor-cli", CliTool.CURSOR.label, ProviderKind.CLI, "", "", false, CliTool.CURSOR),
+    COPILOT_EDITOR("copilot-vscode", "GitHub Copilot (suscripción · solo VS Code)", ProviderKind.EDITOR, "", "", false);
 
-    val isSubscription: Boolean get() = kind == ProviderKind.CLI
+    val isSubscription: Boolean get() = kind == ProviderKind.CLI || kind == ProviderKind.EDITOR
+
+    /** Solo lo puede usar un editor que lo llame por su cuenta (VS Code). Android Studio no lo ofrece. */
+    val isEditorOnly: Boolean get() = kind == ProviderKind.EDITOR
 
     override fun toString() = label
 
@@ -136,6 +144,7 @@ object AiClients {
         ProviderKind.ANTHROPIC -> AnthropicClient(cfg, http)
         ProviderKind.OPENAI_COMPATIBLE -> OpenAiCompatibleClient(cfg, http)
         ProviderKind.CLI -> CliClient(cfg.preset.cli!!, cfg, processes)
+        ProviderKind.EDITOR -> EditorOnlyClient(cfg.preset)
     }
 
     /** Mensaje legible para cualquier fallo de red o de proveedor. */
@@ -162,6 +171,7 @@ object AiClients {
         ProviderPreset.OLLAMA, ProviderPreset.CUSTOM -> null
         ProviderPreset.CLAUDE_CLI -> "https://claude.ai/settings/usage"
         ProviderPreset.CURSOR_CLI -> "https://cursor.com/dashboard"
+        ProviderPreset.COPILOT_EDITOR -> "https://github.com/settings/copilot"
     }
 
     /** `usage` de la API de Anthropic. Los tokens leídos o escritos en caché también cuentan como entrada. */
@@ -211,6 +221,15 @@ object AiClients {
         }
         throw AiException("$base (HTTP $code)" + (detail?.let { ": $it" } ?: "."), code)
     }
+}
+
+/** Un proveedor que solo el editor sabe llamar: si llega hasta el core, se explica en vez de fallar a ciegas. */
+private class EditorOnlyClient(private val preset: ProviderPreset) : AiClient {
+    private fun fail(): Nothing =
+        throw AiException("${preset.label} solo funciona dentro de VS Code, que lo llama con tu sesión de Copilot. Elige otro proveedor.")
+
+    override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply = fail()
+    override suspend fun listModels(): List<String> = fail()
 }
 
 private class AnthropicClient(private val cfg: AiConfig, private val http: HttpTransport) : AiClient {

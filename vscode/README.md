@@ -14,7 +14,12 @@ VS Code, Cursor y Antigravity.
 
 ## Elegir con quién piensa el Mentor
 
-Paleta de comandos › **Mentor: Elegir proveedor**:
+Desplegable del pie del panel (el modelo, o «Cambiar proveedor o clave…») o paleta de comandos › **Mentor: Elegir proveedor**:
+
+- **Con tu suscripción de GitHub Copilot** (solo VS Code): usa la sesión de Copilot que ya tienes en VS Code, por la
+  API oficial de modelos del editor. No hay clave ni programa que instalar. La primera vez VS Code te pregunta si
+  permites que el Mentor use Copilot: acepta. Cada pedido gasta tu cuota de Copilot (cada modelo cuenta distinto;
+  elige el modelo en el desplegable del panel). En Cursor y Antigravity no hay Copilot.
 
 - **Con tu clave de API** (Anthropic, OpenAI, Gemini, Groq, OpenRouter, Ollama…): la clave se guarda en el almacén
   seguro de VS Code, solo en tu equipo.

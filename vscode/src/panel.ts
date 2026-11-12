@@ -5,6 +5,7 @@ import { Reviews } from "./review";
 import { Hints } from "./hints";
 import { Guide } from "./guide";
 import { brandOfPlanFile, brandOfProvider, brandSvg } from "./brands";
+import { isModelAction, MODEL_ACTION, modelOptions, selectedModel } from "./models";
 
 /**
  * Panel lateral del Mentor, con dos pestañas como en Android Studio: «Conversación» (encendido por archivo, contexto,
@@ -52,6 +53,7 @@ export class Panel implements vscode.WebviewViewProvider {
       case "toggle": return doc && this.mentor.toggle(doc);
       case "provider": return vscode.commands.executeCommand("mentor.chooseProvider");
       case "model": return vscode.commands.executeCommand("mentor.chooseModel");
+      case "setModel": return this.setModel(m.arg ?? "");
       case "session": return this.mentor.chooseSession(doc);
       case "paste": return this.mentor.pastePlan(doc);
       case "copyResume": return this.mentor.copyResume(doc);
@@ -77,10 +79,39 @@ export class Panel implements vscode.WebviewViewProvider {
       header: this.header(doc),
       body: this.tab === "chat" ? this.chatHtml(doc) : this.usageHtml(),
       busy: this.mentor.isBusy(doc),
-      model: brandSvg(brandOfProvider(this.mentor.config.providerId)) + esc(this.mentor.config.label()) + " ▾",
+      models: this.modelPicker(),
       conn: this.connectionHtml(),
       actions: this.actions(doc),
     });
+  }
+
+  /** El desplegable de modelos del pie: el ícono del proveedor, sus modelos y las acciones para cambiar algo más. */
+  private modelPicker() {
+    const config = this.mentor.config;
+    const p = core.provider(config.providerId);
+    const list = this.mentor.models();
+    return {
+      brand: brandSvg(brandOfProvider(p.id)),
+      provider: config.providerLabel(),
+      options: modelOptions(config.model, p.defaultModel, list),
+      selected: selectedModel(config.model, p.defaultModel),
+      error: list.error ?? "",
+    };
+  }
+
+  /** Elegiste algo en el desplegable: un modelo se guarda (y se prueba la conexión); una acción abre lo suyo. */
+  private async setModel(value: string) {
+    const config = this.mentor.config;
+    if (!isModelAction(value)) return config.setModel(value);
+    switch (value) {
+      case MODEL_ACTION.reload: return this.mentor.forgetModels();
+      case MODEL_ACTION.provider: return vscode.commands.executeCommand("mentor.chooseProvider");
+      case MODEL_ACTION.custom: {
+        const model = await vscode.window.showInputBox({ title: `Modelo de ${config.providerLabel()}`, prompt: "Escribe el nombre exacto del modelo.", value: config.model });
+        if (model !== undefined) await config.setModel(model.trim());
+        return this.render();
+      }
+    }
   }
 
   /** Si el Mentor está conectado, siempre a la vista: punto verde, rojo (con el botón que lo arregla) o gris. */
@@ -91,7 +122,10 @@ export class Panel implements vscode.WebviewViewProvider {
       case "ok": return `<span class="dot ok"></span>${esc(c.message)}${ago} · <a data-action="test">probar de nuevo</a>`;
       case "testing": return `<span class="dot"></span>Probando la conexión…`;
       case "error": {
-        const fix = c.action === "key" ? `<a data-action="setKey">Poner la clave</a>` : c.action === "login" ? `<a data-action="login">Iniciar sesión en la terminal</a>` : `<a data-action="provider">Elegir proveedor</a>`;
+        const fix = c.action === "key" ? `<a data-action="setKey">Poner la clave</a>`
+          : c.action === "login" ? `<a data-action="login">Iniciar sesión en la terminal</a>`
+          : c.action === "retry" ? `<a data-action="test">Permitir y probar de nuevo</a>`
+          : `<a data-action="provider">Elegir proveedor</a>`;
         return `<span class="dot bad"></span><span class="error">Sin conexión:</span> ${esc(c.message)} · ${fix} · <a data-action="test">probar</a>`;
       }
       default: return `<span class="dot"></span>Conexión sin probar · <a data-action="test">Probar conexión</a>`;
@@ -115,7 +149,9 @@ export class Panel implements vscode.WebviewViewProvider {
     if (!doc) return `<div class="file">Sin archivo abierto</div><div class="muted">Abre un archivo de código para usar el Mentor.</div>`;
     const on = this.mentor.isOn(doc);
     const name = esc(doc.uri.path.split("/").pop() ?? "");
-    const status = on
+    const status = this.mentor.isLoading(doc)
+      ? "Activo en este archivo: buscando tu plan…"
+      : on
       ? "Activo en este archivo: lee tu plan y las reglas del proyecto."
       : "Apagado en este archivo: nada aparece solo. Enciéndelo cuando lo necesites.";
     return `<div class="row"><div class="file">${name} <span class="muted">· ${esc(core.languageOf(this.mentor.relativePath(doc)))}</span></div>` +
@@ -181,7 +217,10 @@ export class Panel implements vscode.WebviewViewProvider {
     const step = this.guide.summary(doc);
     if (step) parts.push(esc(step));
     if (!this.mentor.config.readAiSession) parts.push("sin leer conversaciones (Ajustes)");
-    else if (found) {
+    else if (this.mentor.isLoading(doc) && found === undefined) {
+      // La primera búsqueda todavía no termina: no se dice «no hay conversaciones» antes de tiempo.
+      parts.push(`<span class="muted">Buscando tu plan en Claude Code, GitHub Copilot y Antigravity… <span class="dots"></span></span>`);
+    } else if (found) {
       const pasted = found.source === "Plan pegado";
       parts.push(`${brandSvg(brandOfPlanFile(found.file))}<b>${esc(found.source)}</b>: «${esc(found.lastRequest ?? "conversación")}»` +
         (found.oldAgo ? ` · <span class="warn">de ${esc(found.oldAgo)}</span>` : "") + ` · ` +
@@ -210,7 +249,9 @@ export class Panel implements vscode.WebviewViewProvider {
     const kinds = Object.entries(totals);
     const provider = core.provider(this.mentor.config.providerId);
     let h = `<div class="card"><b>Consumo</b> <span class="muted">· ${esc(this.mentor.config.label())} · <a data-action="provider">cambiar</a></span><br>`;
-    h += provider.subscription
+    h += provider.editor
+      ? `<span class="muted">Con tu suscripción de GitHub Copilot no hay costo por llamada: gasta la cuota de tu plan (cada modelo cuenta distinto). Los tokens son aproximados: VS Code no informa el consumo exacto.</span>`
+      : provider.subscription
       ? `<span class="muted">Con tu suscripción no hay costo por llamada: gasta la cuota de tu plan. Aquí ves los tokens.</span>`
       : `<span class="muted">Costo según lo que informa el proveedor (OpenRouter lo da exacto); si no lo informa, ves solo tokens.</span>`;
     if (provider.billingUrl) h += ` <a href="${esc(provider.billingUrl)}">Ver mi cuenta</a>`;
@@ -232,7 +273,7 @@ function guide(): string {
   return `<div class="card info"><b>Cómo usar el Mentor</b><br><br>` +
     `<b>1. Enciéndelo cuando lo necesites</b> con el botón de arriba o <code>⌘⌥⇧T</code>. Encendido, lee el plan que te dio tu otra IA (Claude Code) y las reglas de tu proyecto (<code>AGENTS.md</code>).<br><br>` +
     `<b>2. Pregúntale lo que quieras</b> abajo: te guía con pistas y preguntas, no te escribe la solución.<br><br>` +
-    `<b>3. Elige con quién piensa</b> en el pie del panel: tu clave de API o tu suscripción (Claude Code, Cursor).</div>`;
+    `<b>3. Elige con quién piensa</b> en el desplegable del pie del panel: el modelo, o «Cambiar proveedor o clave…» para usar tu clave de API o tu suscripción (GitHub Copilot, Claude Code, Cursor).</div>`;
 }
 
 function entry(e: Entry): string {
@@ -316,6 +357,10 @@ function shell(n: string): string {
   textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 52px; font-family: inherit; font-size: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 8px; padding: 6px 8px; }
   textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
   .bar { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 8px; }
+  .picker { display: flex; align-items: center; min-width: 0; flex: 1; }
+  .picker svg.brand { flex: none; }
+  select { min-width: 0; max-width: 100%; font-family: inherit; font-size: 0.92em; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; padding: 2px 4px; cursor: pointer; }
+  select:focus { outline: 1px solid var(--vscode-focusBorder); }
   button.send { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 6px; padding: 4px 14px; cursor: pointer; }
   button.send:disabled { opacity: 0.5; cursor: default; }
   .dots::after { content: "…"; animation: blink 1.2s infinite; } @keyframes blink { 50% { opacity: 0.2; } }
@@ -325,13 +370,33 @@ function shell(n: string): string {
 <footer>
   <div class="actions" id="actions"></div>
   <textarea id="input" placeholder="Pregúntale al Mentor… (Enter envía · Mayús+Enter salta de línea)"></textarea>
-  <div class="bar"><a data-action="model" id="model" title="Elegir modelo, proveedor o clave"></a><button class="send" id="send">Enviar</button></div>
+  <div class="bar"><span class="picker"><span id="brand"></span><select id="model"></select></span><button class="send" id="send">Enviar</button></div>
   <div class="conn" id="conn"></div>
 </footer>
 <script nonce="${n}">
   const vscode = acquireVsCodeApi();
   const input = document.getElementById("input"), send = document.getElementById("send"), body = document.getElementById("body");
-  let lastTab = "chat", lastBody = "";
+  const model = document.getElementById("model");
+  let lastTab = "chat", lastBody = "", lastModels = "", pendingModels = null, selected = "";
+  const last = {};
+  // Solo se reemplaza lo que cambió: si se redibujara siempre, un clic que cae justo durante un redibujo se pierde
+  // (el botón que pulsaste ya no existe) y tendrías que pulsar otra vez.
+  function put(id, html) { if (last[id] === html) return; last[id] = html; document.getElementById(id).innerHTML = html; }
+  function fillModels(d) {
+    lastModels = JSON.stringify(d); pendingModels = null; selected = d.selected;
+    put("brand", d.brand);
+    model.replaceChildren(...d.options.map((o) => { const e = document.createElement("option"); e.value = o.value; e.textContent = o.label; e.disabled = !!o.disabled; return e; }));
+    model.value = d.selected;
+    model.title = d.error ? "No pude cargar la lista de modelos: " + d.error : "Modelo del Mentor (" + d.provider + ")";
+  }
+  model.addEventListener("change", () => {
+    const v = model.value;
+    // Las acciones (escribir otro, cambiar de proveedor…) no son un modelo: el desplegable vuelve al modelo actual.
+    if (v.startsWith("__")) model.value = selected; else selected = v;
+    vscode.postMessage({ type: "setModel", arg: v });
+  });
+  // Con el desplegable abierto no se redibuja (se cerraría en tu cara): se aplica al soltarlo.
+  model.addEventListener("blur", () => { if (pendingModels) fillModels(pendingModels); });
   function submit() { const t = input.value.trim(); if (!t || send.disabled) return; vscode.postMessage({ type: "ask", text: t }); input.value = ""; }
   send.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
@@ -342,11 +407,13 @@ function shell(n: string): string {
   });
   window.addEventListener("message", (ev) => {
     const m = ev.data; if (m.type !== "render") return;
-    document.getElementById("header").innerHTML = m.header;
+    put("header", m.header);
     document.querySelectorAll("[data-tab]").forEach((t) => t.classList.toggle("sel", t.dataset.tab === m.tab));
-    document.getElementById("model").innerHTML = m.model;
-    document.getElementById("conn").innerHTML = m.conn;
-    document.getElementById("actions").innerHTML = m.actions;
+    if (JSON.stringify(m.models) !== lastModels) {
+      if (document.activeElement === model) pendingModels = m.models; else fillModels(m.models);
+    }
+    put("conn", m.conn);
+    put("actions", m.actions);
     send.disabled = m.busy;
     if (m.body !== lastBody) {
       // Si llegó algo nuevo a la conversación, baja al final; si no, respeta dónde estabas leyendo.

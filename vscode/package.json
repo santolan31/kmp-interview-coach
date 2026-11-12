@@ -2,11 +2,11 @@
   "name": "mentor",
   "displayName": "Mentor",
   "description": "Un mentor de IA dentro del editor: te guía con pistas y preguntas en vez de escribir el código por ti. Usa tu clave de API o tu suscripción (Claude Code, Cursor), y sigue los planes de Claude Code y Antigravity.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "publisher": "santolan31",
   "license": "SEE LICENSE IN LICENSE",
   "repository": { "type": "git", "url": "https://github.com/santolan31/kmp-interview-coach" },
-  "engines": { "vscode": "^1.85.0" },
+  "engines": { "vscode": "^1.90.0" },
   "categories": ["Education", "AI", "Programming Languages"],
   "main": "./dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -76,7 +76,7 @@
         "mentor.provider": {
           "type": "string",
           "default": "anthropic",
-          "enum": ["anthropic", "openai", "gemini", "groq", "openrouter", "ollama", "custom", "claude-cli", "cursor-cli"],
+          "enum": ["anthropic", "openai", "gemini", "groq", "openrouter", "ollama", "custom", "claude-cli", "cursor-cli", "copilot-vscode"],
           "enumDescriptions": [
             "Anthropic (Claude) con tu clave de API",
             "OpenAI con tu clave de API",
@@ -86,9 +86,10 @@
             "Ollama en tu computador, sin clave",
             "Otro servicio compatible con OpenAI",
             "Tu suscripción Claude Pro/Max a través de Claude Code (claude)",
-            "Tu suscripción de Cursor a través de cursor-agent (experimental)"
+            "Tu suscripción de Cursor a través de cursor-agent (experimental)",
+            "Tu suscripción de GitHub Copilot, con la sesión que ya tienes en VS Code (solo VS Code; te pide permiso la primera vez)"
           ],
-          "markdownDescription": "Con quién piensa el Mentor. Las opciones de **suscripción** usan el programa oficial de cada servicio con tu propia sesión: sin clave ni costo por llamada, pero unos segundos más lentas. La clave de API se guarda con `Mentor: Elegir proveedor`, en el almacén seguro de VS Code."
+          "markdownDescription": "Con quién piensa el Mentor. Las opciones de **suscripción** usan tu propia sesión (el programa oficial de cada servicio, o GitHub Copilot dentro de VS Code): sin clave ni costo por llamada, gastan la cuota de tu plan. La clave de API se guarda con `Mentor: Elegir proveedor`, en el almacén seguro de VS Code."
         },
         "mentor.model": { "type": "string", "default": "", "description": "Modelo. Vacío = el que recomienda el proveedor (o el que use el programa de tu suscripción)." },
         "mentor.baseUrl": { "type": "string", "default": "", "description": "URL del servicio (solo «Otro compatible con OpenAI»), o la ruta del programa de tu suscripción si no está en el PATH. Vacío = lo normal." },

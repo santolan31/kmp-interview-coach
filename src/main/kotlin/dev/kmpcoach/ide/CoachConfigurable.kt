@@ -71,7 +71,8 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
         group("Proveedor de IA (tu clave de API o tu suscripción)") {
             row("Proveedor:") {
                 // Cada proveedor con el ícono de su IA (la misma con clave de API o con suscripción).
-                comboBox(ProviderPreset.entries.toList(), BrandIcons.renderer<ProviderPreset>({ it.label }, { BrandIcons.ofProvider(it.id) }))
+                // GitHub Copilot por suscripción solo existe en VS Code (lo llama el propio editor): aquí no se ofrece.
+                comboBox(ProviderPreset.entries.filterNot { it.isEditorOnly }, BrandIcons.renderer<ProviderPreset>({ it.label }, { BrandIcons.ofProvider(it.id) }))
                     .bindItem({ settings.preset }, { settings.state.preset = (it ?: ProviderPreset.ANTHROPIC).id })
                     .applyToComponent { addActionListener { (selectedItem as? ProviderPreset)?.let(::switchPreset) } }
             }

@@ -22,7 +22,7 @@ object MentorApi {
         mapOf(
             "id" to it.id, "label" to it.label, "subscription" to it.isSubscription, "needsKey" to it.needsKey,
             "defaultModel" to it.defaultModel, "baseUrl" to it.baseUrl, "billingUrl" to AiClients.billingUrl(it),
-            "executable" to it.cli?.executable,
+            "executable" to it.cli?.executable, "editor" to it.isEditorOnly,
         )
     })
 

@@ -8,6 +8,7 @@ import { Reviews } from "./review";
 import { Hints } from "./hints";
 import { Guide } from "./guide";
 import { brandIcon, brandOfProvider, initBrands } from "./brands";
+import { copilotModels } from "./copilot";
 
 /**
  * Punto de entrada de la extensión. Conecta el estado del Mentor con el panel lateral, el botón de la barra de estado
@@ -69,11 +70,17 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration("mentor")) return;
+      // Otro proveedor u otra ruta tienen otros modelos: la lista del desplegable se vuelve a pedir.
+      if (["mentor.provider", "mentor.baseUrl"].some((k) => e.affectsConfiguration(k))) mentor.forgetModels();
       panel.render();
       // Cambiaste el proveedor, el modelo o la ruta (también desde Ajustes): se prueba y se avisa si quedó conectado.
       if (["mentor.provider", "mentor.model", "mentor.baseUrl"].some((k) => e.affectsConfiguration(k))) ready.soon();
     }),
-    vscode.commands.registerCommand("mentor.setApiKey", async () => { if (await setApiKey(config)) await mentor.testConnection(); }),
+    vscode.commands.registerCommand("mentor.setApiKey", async () => {
+      if (!(await setApiKey(config))) return;
+      mentor.forgetModels(); // con la clave nueva quizá ya se puede leer la lista de modelos
+      await mentor.testConnection();
+    }),
     vscode.commands.registerCommand("mentor.testConnection", () => mentor.testConnection()),
     vscode.commands.registerCommand("mentor.loginCli", () => loginCli(config, mentor)),
     vscode.commands.registerCommand("mentor.pastePlan", () => mentor.pastePlan(activeDoc())),
@@ -82,13 +89,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("mentor.toggle", async () => {
       const doc = activeDoc();
       if (!doc) return void vscode.window.showInformationMessage("Abre un archivo de código para encender el Mentor.");
-      await mentor.toggle(doc);
+      // El cambio de estado es inmediato; la búsqueda de la conversación sigue mientras ya ves el panel.
+      const searching = mentor.toggle(doc);
       if (mentor.isOn(doc)) panel.reveal();
+      await searching;
     }),
     vscode.commands.registerCommand("mentor.openPanel", () => panel.reveal()),
     vscode.commands.registerCommand("mentor.chooseProvider", async () => {
       ready.paused = true;
       try { await chooseProvider(config); } finally { ready.paused = false; }
+      mentor.forgetModels(); // la lista se pide de nuevo, ya con la clave que acabas de poner
       await ready.check();
     }),
     vscode.commands.registerCommand("mentor.chooseModel", () => chooseModel(config).then(() => panel.render())),
@@ -166,6 +176,15 @@ async function setApiKey(config: Config): Promise<boolean> {
 async function loginCli(config: Config, mentor: Mentor) {
   const p = core.provider(config.providerId);
   if (!p.subscription) return void vscode.window.showInformationMessage(`${p.label} usa clave de API, no inicio de sesión. Usa «Mentor: Poner o cambiar la clave de API».`);
+  if (p.editor) {
+    // Copilot usa la sesión de GitHub que ya tiene VS Code: no hay terminal; se inicia desde el ícono de Cuentas.
+    const pick = await vscode.window.showInformationMessage(
+      "GitHub Copilot usa tu sesión de GitHub en VS Code. Si no la tienes, inicia sesión desde el ícono de Cuentas (abajo a la izquierda) o desde el chat de Copilot. Luego prueba la conexión y acepta el permiso.",
+      "Probar conexión",
+    );
+    if (pick) await mentor.testConnection();
+    return;
+  }
   const exe = core.findCli(p.id, vscode.workspace.getConfiguration("mentor").get<string>("baseUrl", ""));
   if (!exe) return void offerFix(`No encontré \`${p.executable}\` en este equipo. Instálalo o escribe su ruta en Ajustes › Mentor › Base Url.`, "provider");
   const terminal = vscode.window.createTerminal({ name: `Mentor · iniciar sesión (${p.executable})` });
@@ -192,7 +211,9 @@ async function chooseProvider(config: Config) {
   const baseUrl = vscode.workspace.getConfiguration("mentor").get<string>("baseUrl", "");
   const items = await Promise.all(core.providers().map(async (p) => {
     let detail: string;
-    if (p.subscription) {
+    if (p.editor) {
+      detail = "Suscripción · usa tu sesión de GitHub Copilot en VS Code · te pide permiso la primera vez · gasta tu cuota de Copilot";
+    } else if (p.subscription) {
       const found = core.findCli(p.id, baseUrl);
       detail = found ? `Suscripción · usa tu sesión de ${p.executable} (${found}) · sin costo por llamada, unos segundos más lento` : `Suscripción · no encontré ${p.executable} en este equipo`;
     } else {
@@ -213,7 +234,7 @@ async function chooseModel(config: Config) {
   const cfg = await config.aiConfig();
   const result = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "Cargando modelos…" },
-    () => core.listModels(cfg),
+    () => (core.provider(cfg.provider).editor ? copilotModels() : core.listModels(cfg)),
   );
   const custom = "$(edit) Escribir el nombre de otro modelo…";
   const other = "$(key) Cambiar de proveedor o de clave…";

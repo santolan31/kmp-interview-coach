@@ -13,6 +13,8 @@ export interface Provider {
   baseUrl: string;
   billingUrl: string | null;
   executable: string | null;
+  /** Lo llama el propio editor (GitHub Copilot por la API de modelos de VS Code), no el core. */
+  editor: boolean;
 }
 
 /** Lo que el core necesita para llamar a la IA. */

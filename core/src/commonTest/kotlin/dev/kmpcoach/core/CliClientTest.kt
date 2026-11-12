@@ -95,4 +95,17 @@ class CliClientTest {
         }
         assertFalse(ProviderPreset.ANTHROPIC.isSubscription)
     }
+
+    @Test
+    fun copilotIsASubscriptionThatOnlyTheEditorCalls() = runTest {
+        val p = ProviderPreset.COPILOT_EDITOR
+        assertTrue(p.isSubscription && p.isEditorOnly && !p.needsKey)
+        assertEquals(null, AiClients.validate(cfg(p)))
+        assertEquals(Brand.COPILOT, Brand.ofProvider(p.id))
+        assertEquals(p, ProviderPreset.of("copilot-vscode"))
+        assertTrue(ProviderPreset.entries.filter { it.isEditorOnly } == listOf(p), "Android Studio oculta solo este")
+        // Si por error llega al core (Android Studio), se explica en vez de intentar una llamada que no puede hacer.
+        val e = assertFailsWith<AiException> { AiClients.create(cfg(p)).complete("s", listOf(ChatMessage("user", "u")), 10) }
+        assertTrue("solo funciona dentro de VS Code" in e.message!!, e.message)
+    }
 }

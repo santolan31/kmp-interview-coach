@@ -48,7 +48,12 @@ export class Config {
   label(): string {
     const p = core.provider(this.providerId);
     const model = this.model || p.defaultModel || (p.subscription ? "modelo por defecto" : "sin modelo");
-    return `${p.label.replace(/ \(suscripción.*\)$/, "").replace(" · experimental", "")} · ${model}`;
+    return `${this.providerLabel()} · ${model}`;
+  }
+
+  /** «Anthropic (Claude)», sin las aclaraciones largas de la lista de proveedores. */
+  providerLabel(): string {
+    return core.provider(this.providerId).label.replace(/ \(suscripción.*\)$/, "").replace(" · experimental", "");
   }
 
   async setProvider(id: string) {

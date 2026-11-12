@@ -6,6 +6,9 @@ import { Sessions, readRules, Found, Old, sourceOf } from "./context";
 import { ChatMessage, core, Reply } from "./core";
 import { brandIcon } from "./brands";
 import { actionFor, FixAction, forVsCode } from "./messages";
+import { ModelList } from "./models";
+import { completeWithCopilot, copilotModels } from "./copilot";
+import { COPILOT_PROVIDER } from "./lm";
 
 /**
  * Una entrada de la conversación del panel, en orden de llegada. «review» y «hint» solo marcan el momento: el panel
@@ -53,6 +56,10 @@ export class Mentor implements vscode.Disposable {
   private readonly found = new Map<string, Found | null>();
   /** Si no hay conversación reciente: la última del proyecto (estás retomando el proyecto). */
   private readonly old = new Map<string, Old | null>();
+  /** Archivos cuya conversación se está buscando ahora mismo. */
+  private readonly loading = new Set<string>();
+  /** Lista de modelos por proveedor, para el desplegable del panel. */
+  private readonly modelLists = new Map<string, ModelList>();
 
   connection: Connection = { state: "untested", message: "Sin probar", label: "", at: 0 };
 
@@ -101,20 +108,64 @@ export class Mentor implements vscode.Disposable {
   /** Enciende o apaga el Mentor en el archivo. Encendido, lee tu conversación con la otra IA para saber en qué paso vas. */
   async toggle(doc: vscode.TextDocument) {
     const k = doc.uri.toString();
+    // Primero cambia el botón (al instante) y después se busca la conversación, que puede tardar unos segundos.
+    // Si se esperara a la búsqueda para avisar al panel, el botón seguiría diciendo «Apagado», volverías a pulsar
+    // y lo apagarías sin querer.
     if (this.on.has(k)) this.on.delete(k);
-    else {
-      this.on.add(k);
-      await this.refreshSession(doc);
-    }
+    else this.on.add(k);
     this.changed.fire();
+    if (this.on.has(k)) await this.refreshSession(doc);
   }
 
   /** Vuelve a buscar la conversación de este archivo (solo con el Mentor encendido y si lo permites en Ajustes). */
   async refreshSession(doc: vscode.TextDocument) {
     if (!this.isOn(doc) || !this.config.readAiSession || !this.sessions) return;
-    const found = await this.sessions.find(path.basename(doc.uri.fsPath)).catch(() => null);
-    this.found.set(doc.uri.toString(), found);
-    this.old.set(doc.uri.toString(), found ? null : await this.sessions.latestOld().catch(() => null));
+    const k = doc.uri.toString();
+    this.loading.add(k);
+    this.changed.fire();
+    try {
+      const found = await this.sessions.find(path.basename(doc.uri.fsPath)).catch(() => null);
+      const old = found ? null : await this.sessions.latestOld().catch(() => null);
+      // Lo apagaste mientras buscaba: no se guarda un resultado que ya nadie pidió.
+      if (!this.isOn(doc)) return;
+      this.found.set(k, found);
+      this.old.set(k, old);
+    } finally {
+      this.loading.delete(k);
+      this.changed.fire();
+    }
+  }
+
+  /** Si está buscando la conversación de este archivo (el panel dice «Buscando tu plan…» en vez de «no hay»). */
+  isLoading(doc: vscode.TextDocument | undefined): boolean {
+    return this.loading.has(key(doc));
+  }
+
+  /** Modelos del proveedor actual para el desplegable del panel. La primera vez se piden y llegan después. */
+  models(): ModelList {
+    const k = this.config.providerId;
+    let list = this.modelLists.get(k);
+    if (!list) {
+      list = { loading: true, models: [] };
+      this.modelLists.set(k, list);
+      void this.loadModels(k, list);
+    }
+    return list;
+  }
+
+  /** Cambiaste de proveedor, de ruta o de clave: la lista guardada ya no sirve y se pide otra vez. */
+  forgetModels() {
+    this.modelLists.clear();
+    this.changed.fire();
+  }
+
+  private async loadModels(k: string, list: ModelList) {
+    const r = await this.config.aiConfig().then((c) => (c.provider === COPILOT_PROVIDER ? copilotModels() : core.listModels(c)))
+      .catch((e: unknown): { ok: false; error: string } => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    if (this.modelLists.get(k) !== list) return; // se pidió otra lista mientras tanto
+    list.loading = false;
+    if (r.ok) list.models = r.models;
+    else list.error = r.error;
     this.changed.fire();
   }
 
@@ -274,7 +325,10 @@ export class Mentor implements vscode.Disposable {
   /** Llama a la IA con la configuración actual y anota el consumo. Los errores hablan de VS Code y de qué hacer. */
   async call(kind: string, system: string, messages: ChatMessage[], maxTokens: number): Promise<Reply> {
     const cfg = await this.config.aiConfig();
-    const reply = await core.complete(cfg, system, messages, maxTokens);
+    // GitHub Copilot lo llama VS Code con tu sesión (API de modelos); los demás, el core (red o programa de terminal).
+    const reply = cfg.provider === COPILOT_PROVIDER
+      ? await completeWithCopilot(system, messages, cfg.model)
+      : await core.complete(cfg, system, messages, maxTokens);
     if (reply.ok) await this.record(kind, reply.inputTokens ?? 0, reply.outputTokens ?? 0, reply.costUsd ?? 0);
     else {
       const error = forVsCode(reply.error);
@@ -340,6 +394,7 @@ export async function offerFix(error: string, action: Connection["action"]) {
     key: ["Poner la clave", "mentor.setApiKey"],
     login: ["Iniciar sesión en la terminal", "mentor.loginCli"],
     provider: ["Elegir proveedor", "mentor.chooseProvider"],
+    retry: ["Permitir y probar de nuevo", "mentor.testConnection"],
   };
   const [label, command] = buttons[action ?? "provider"];
   const options = action === "provider" || !action ? [label] : [label, "Elegir proveedor"];

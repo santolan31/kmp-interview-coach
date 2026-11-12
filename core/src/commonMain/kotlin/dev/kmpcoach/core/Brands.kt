@@ -30,6 +30,7 @@ enum class Brand(val id: String, val color: String, val glyph: String) {
             ProviderPreset.OPENROUTER -> OPENROUTER
             ProviderPreset.OLLAMA -> OLLAMA
             ProviderPreset.CURSOR_CLI -> CURSOR
+            ProviderPreset.COPILOT_EDITOR -> COPILOT
             ProviderPreset.CUSTOM -> CUSTOM
         }
 
