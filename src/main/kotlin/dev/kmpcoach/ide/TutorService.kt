@@ -338,7 +338,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
      * Extracto de tu conversación con Claude Code sobre este archivo, solo si encendiste el tutor en él.
      * Lee disco: se llama dentro de las corrutinas, en un hilo de E/S.
      */
-    private suspend fun sessionFor(file: VirtualFile?): String? {
+    internal suspend fun sessionFor(file: VirtualFile?): String? {
         if (file == null || !isTutorOn(file)) return null
         return withContext(Dispatchers.IO) { runCatching { AiSessionContext.getInstance(project).find(file.name)?.excerpt }.getOrNull() }
     }
@@ -403,7 +403,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         hiddenInEditor.remove(url)
         setPending(file, document, caretLine(file) ?: 1, "revisando el archivo…")
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
         val job = cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
@@ -414,9 +415,9 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val system = Prompts.reviewSystem(options)
                 val session = sessionFor(file)
                 val rules = rules()
-                val user = Prompts.reviewUser(challenge, text, analysis, file.name, session, rules)
+                val user = Prompts.reviewUser(challenge, text, analysis, relativePath(file), session, rules)
                 val sources = listOfNotNull(file.name, session?.let { "tu conversación con Claude Code" }, rules?.source)
-                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1800).await()
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1800)
                 val usage = UsageTracker.getInstance()
                 usage.record(if (auto) UsageKind.LIVE else UsageKind.REVIEW, file.name, reply.usage, system + user, reply.text, reply.limits)
                 val call = usage.lastCall
@@ -615,7 +616,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val focus = caretLine(file)
         val lineCount = document.lineCount
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         val goal = ProjectContext.getInstance(project).goal()
         val mastered = LearnerProfile.getInstance().mastered()
         val job = cs.launch {
@@ -627,14 +629,14 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val system = HintPrompts.hintSystem(options, level)
                 val fullGoal = listOfNotNull(goal, sessionFor(file)?.let { "Extracto de su conversación con la IA que lo guía paso a paso:\n$it" })
                     .joinToString("\n").ifBlank { null }
-                val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level, fullGoal, mastered, rules())
+                val user = HintPrompts.hintUser(text, relativePath(file), problems, previous, focus, level, fullGoal, mastered, rules())
                 val fallbackLine = focus ?: problems.firstOrNull()?.line ?: 1
-                var reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500).await()
+                var reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500)
                 usage.record(UsageKind.HINT, file.name, reply.usage, system + user, reply.text, reply.limits)
                 var hint = HintParser.parse(reply.text, lineCount, level, fallbackLine)
                 if (CodeGuard.leaks(hint.text, text, level)) {
                     val retry = listOf(ChatMessage("user", user), ChatMessage("assistant", reply.text), ChatMessage("user", HintPrompts.LEAK_RETRY))
-                    reply = client.completeFull(system, retry, 500).await()
+                    reply = client.completeFull(system, retry, 500)
                     usage.record(UsageKind.HINT, file.name, reply.usage, system + user + reply.text + HintPrompts.LEAK_RETRY, reply.text, reply.limits)
                     hint = HintParser.parse(reply.text, lineCount, level, fallbackLine)
                     if (CodeGuard.leaks(hint.text, text, level)) hint = hint.copy(text = CodeGuard.redact(hint.text, text, level), redacted = true)
@@ -723,15 +725,16 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val hints = session.hints.toList()
         val focus = caretLine(file)
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         val job = cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
             try {
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val system = HintPrompts.giveUpSystem(options)
-                val user = HintPrompts.giveUpUser(text, file.name, problems, hints, focus, rules())
-                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1200).await()
+                val user = HintPrompts.giveUpUser(text, relativePath(file), problems, hints, focus, rules())
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1200)
                 UsageTracker.getInstance().record(UsageKind.GIVE_UP, file.name, reply.usage, system + user, reply.text, reply.limits)
                 session.giveUp = reply.text.trim()
                 session.giveUpAt = System.currentTimeMillis()
@@ -778,15 +781,16 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         fire()
         showToolWindow()
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
             val answer = try {
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val system = HintPrompts.explainSystem(options)
-                val user = HintPrompts.explainUser(selection, file.name, firstLine)
-                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500).await()
+                val user = HintPrompts.explainUser(selection, relativePath(file), firstLine)
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500)
                 UsageTracker.getInstance().record(UsageKind.EXPLAIN, file.name, reply.usage, system + user, reply.text, reply.limits)
                 val questions = HintParser.questions(reply.text)
                 "Antes de explicártelo, comprueba si ya lo entiendes. Respóndeme aquí abajo:\n" +
@@ -962,7 +966,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         refreshInlays(file)
         fire()
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
         cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
@@ -970,8 +975,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val analysis = Analyzer.analyze(text, challenge, lexical = false)
-                val system = Prompts.chatSystem(options, challenge, text, analysis, file.name, sessionFor(file), rules())
-                val reply = client.completeFull(system, messages, 500).await()
+                val system = Prompts.chatSystem(options, challenge, text, analysis, relativePath(file), sessionFor(file), rules())
+                val reply = client.completeFull(system, messages, 500)
                 UsageTracker.getInstance().record(UsageKind.CHAT, file.name, reply.usage, system + messages.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()
             } catch (e: CancellationException) {
@@ -1010,7 +1015,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         fire()
         showToolWindow()
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        // La ruta dice el lenguaje (instrucciones de Kotlin/KMP o de otro lenguaje) y el módulo / source set del archivo.
+        val options = settings.promptOptions().forFile(file?.let { relativePath(it) })
         val challenge = ChallengeRepository.getInstance(project).challengeFor(text)
         cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
@@ -1018,8 +1024,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val analysis = if (text.isBlank()) null else Analyzer.analyze(text, challenge, lexical = false)
-                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.name, sessionFor(file), rules())
-                val reply = client.completeFull(system, snapshot, 900).await()
+                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.let { relativePath(it) }, sessionFor(file), rules())
+                val reply = client.completeFull(system, snapshot, 900)
                 UsageTracker.getInstance().record(UsageKind.CHAT, file?.name, reply.usage, system + snapshot.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()
             } catch (e: CancellationException) {
@@ -1044,7 +1050,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             try {
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
-                UsageTracker.getInstance().setBalance(providerId, client.balance().await(), null)
+                UsageTracker.getInstance().setBalance(providerId, client.balance(), null)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

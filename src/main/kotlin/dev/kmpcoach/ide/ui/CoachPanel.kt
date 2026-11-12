@@ -45,7 +45,11 @@ import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.icons.AllIcons
 import dev.kmpcoach.core.AiClients
+import dev.kmpcoach.core.Brand
+import dev.kmpcoach.ide.BrandIcons
+import dev.kmpcoach.core.futureOf
 import dev.kmpcoach.core.Analysis
 import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.Challenge
@@ -377,13 +381,14 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             loadingModels = false
             if (project.isDisposed) return@invokeLater
             modelLink.text = settings.modelLabel() + " ▾"
+            modelLink.icon = BrandIcons.ofProvider(settings.preset.id)
             showModelPopup(models, error)
         }
         app.executeOnPooledThread {
             val cfg = runCatching { settings.aiConfig() }.getOrNull()
             val invalid = cfg?.let { AiClients.validate(it.copy(model = it.model.ifBlank { "x" })) }
             if (cfg == null || invalid != null) return@executeOnPooledThread done(emptyList(), invalid ?: "No pude leer la configuración del proveedor.")
-            AiClients.create(cfg).listModels().whenComplete { models, err ->
+            futureOf { AiClients.create(cfg).listModels() }.whenComplete { models, err ->
                 done(models.orEmpty().sorted(), err?.let { AiClients.friendly(it, cfg) })
             }
         }
@@ -418,6 +423,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun setModel(model: String) {
         settings.state.model = model
         modelLink.text = settings.modelLabel() + " ▾"
+        modelLink.icon = BrandIcons.ofProvider(settings.preset.id)
         scheduleRefresh()
     }
 
@@ -549,7 +555,10 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         reviewLink.toolTipText = "El tutor comenta debajo de las líneas de este archivo" + shortcutNote("KmpCoach.ReviewNow")
         giveUpLink.isEnabled = file != null && !tutor.isGiveUpBusy(file)
         sendButton.isEnabled = !tutor.isChatBusy(file)
-        if (!loadingModels) modelLink.text = settings.modelLabel() + " ▾"
+        if (!loadingModels) {
+            modelLink.text = settings.modelLabel() + " ▾"
+            modelLink.icon = BrandIcons.ofProvider(settings.preset.id)
+        }
     }
 
     private fun statusText(file: VirtualFile?): String {
@@ -643,9 +652,11 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             rules?.let { "reglas: ${esc(it.source)}" } ?: "sin AGENTS.md",
         ).joinToString(" · ")
         val text = if (found == null) {
-            "Contexto: no encontré una conversación reciente de Claude Code en este proyecto · $extra. <a href='session'>elegir</a>"
+            "Contexto: no encontré una conversación reciente de Claude Code ni un plan de Antigravity que hable de este archivo · $extra. <a href='session'>elegir</a>"
         } else {
-            "Contexto: «${esc(found.lastRequest ?: "conversación sin pedidos")}» · $extra · " +
+            // El símbolo de color de la IA de donde sale el plan (Claude Code o Antigravity): el HTML de Swing no dibuja SVG.
+            val b = Brand.ofPlanFile(found.file.path)
+            "Contexto: <span style='color:${b.color}'>${b.glyph}</span> «${esc(found.lastRequest ?: "conversación sin pedidos")}» · $extra · " +
                 (if (found.automatic) "elegida sola" else "elegida por ti") + " · <a href='session'>cambiar</a>"
         }
         h.append("<div style='color:$muted;margin-bottom:10px'>$text</div>")
@@ -654,19 +665,24 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun chooseSession() {
         val ctx = AiSessionContext.getInstance(project)
         ApplicationManager.getApplication().executeOnPooledThread {
-            val items = ctx.candidates().map { it to ctx.label(it) }
+            // Conversaciones de Claude Code y planes de Antigravity, cada uno con el ícono de su IA.
+            val items = listOf(SourceItem("Automática: el plan más reciente que habla de este archivo", null, AllIcons.Actions.Lightning)) +
+                ctx.candidates().map { SourceItem(ctx.label(it), it, BrandIcons.ofPlanFile(it)) } +
+                ctx.antigravityPlans().map { SourceItem(ctx.label(it.file), it.file, BrandIcons.ofPlanFile(it.file)) }
             ApplicationManager.getApplication().invokeLater {
                 if (project.isDisposed) return@invokeLater
-                val auto = "Automática: la más reciente que habla de este archivo"
-                val options = listOf(auto) + items.map { it.second }
-                JBPopupFactory.getInstance().createPopupChooserBuilder(options)
-                    .setTitle("Conversación que lee el tutor")
-                    .setItemChosenCallback { c -> ctx.choose(if (c == auto) null else items.firstOrNull { it.second == c }?.first) }
+                JBPopupFactory.getInstance().createPopupChooserBuilder(items)
+                    .setTitle("De dónde lee el Mentor tu plan")
+                    .setRenderer(BrandIcons.renderer<SourceItem>({ it.label }, { it.icon }))
+                    .setNamerForFiltering { it.label }
+                    .setItemChosenCallback { ctx.choose(it.file) }
                     .createPopup()
                     .showCenteredInCurrentWindow(project)
             }
         }
     }
+
+    private class SourceItem(val label: String, val file: java.io.File?, val icon: javax.swing.Icon)
 
     /** Conversación vacía: cómo se usa, en tres gestos. Se puede cerrar. */
     private fun guide(h: StringBuilder, file: VirtualFile?) {
@@ -988,10 +1004,13 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             p == ProviderPreset.OPENROUTER -> {
                 val b = usage.balance.takeIf { usage.hasBalanceFor(p.id) }
                 val err = usage.balanceError.takeIf { usage.hasBalanceFor(p.id) }
+                // Copias locales: el saldo viene del módulo :core y Kotlin no hace smart cast de propiedades de otro módulo.
+                val remaining = b?.remainingUsd
+                val used = b?.usedUsd
                 when {
-                    b?.remainingUsd != null -> h.append("Saldo restante: <b>${UsageMath.usd(b.remainingUsd)}</b>" +
+                    remaining != null -> h.append("Saldo restante: <b>${UsageMath.usd(remaining)}</b>" +
                         (b.limitUsd?.let { " de ${UsageMath.usd(it)}" } ?: "") + " <span style='color:$muted'>· ${ago(usage.balanceAt)}</span> <a href='balance'>actualizar</a><br>")
-                    b?.usedUsd != null -> h.append("Gastado con esta clave: <b>${UsageMath.usd(b.usedUsd)}</b> (la clave no tiene límite) <a href='balance'>actualizar</a><br>")
+                    used != null -> h.append("Gastado con esta clave: <b>${UsageMath.usd(used)}</b> (la clave no tiene límite) <a href='balance'>actualizar</a><br>")
                     err != null -> h.append("<span style='color:$bad'>${esc(err)}</span> <a href='balance'>reintentar</a><br>")
                     else -> h.append("<a href='balance'>Consultar saldo</a><br>")
                 }
@@ -1007,7 +1026,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         usage.limitsFor(p.id)?.let { l ->
             val parts = buildList {
                 if (l.requestsRemaining != null) add("${l.requestsRemaining}${l.requestsLimit?.let { "/$it" } ?: ""} solicitudes")
-                if (l.tokensRemaining != null) add("${UsageMath.tokens(l.tokensRemaining)}${l.tokensLimit?.let { "/" + UsageMath.tokens(it) } ?: ""} tokens")
+                l.tokensRemaining?.let { remaining -> add("${UsageMath.tokens(remaining)}${l.tokensLimit?.let { "/" + UsageMath.tokens(it) } ?: ""} tokens") }
             }
             h.append("<span style='color:$muted'>Cupo disponible en la ventana actual: ${parts.joinToString(" · ")}" +
                 (l.tokensReset?.let { " (se renueva: ${esc(it)})" } ?: "") + "</span><br>")

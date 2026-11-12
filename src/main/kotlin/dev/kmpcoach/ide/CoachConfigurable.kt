@@ -17,6 +17,8 @@ import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.openapi.util.text.StringUtil
 import dev.kmpcoach.core.AiClients
+import dev.kmpcoach.core.futureOf
+import dev.kmpcoach.core.JvmProcessRunner
 import dev.kmpcoach.core.AiConfig
 import dev.kmpcoach.core.ChatMessage
 import dev.kmpcoach.core.Level
@@ -66,9 +68,10 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
     }
 
     override fun createPanel(): DialogPanel = panel {
-        group("Proveedor de IA (usa tu propia clave)") {
+        group("Proveedor de IA (tu clave de API o tu suscripción)") {
             row("Proveedor:") {
-                comboBox(ProviderPreset.entries.toList())
+                // Cada proveedor con el ícono de su IA (la misma con clave de API o con suscripción).
+                comboBox(ProviderPreset.entries.toList(), BrandIcons.renderer<ProviderPreset>({ it.label }, { BrandIcons.ofProvider(it.id) }))
                     .bindItem({ settings.preset }, { settings.state.preset = (it ?: ProviderPreset.ANTHROPIC).id })
                     .applyToComponent { addActionListener { (selectedItem as? ProviderPreset)?.let(::switchPreset) } }
             }
@@ -76,7 +79,8 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
                 baseUrlField = textField().columns(COLUMNS_LARGE)
                     .bindText({ settings.state.baseUrl.orEmpty() }, { settings.state.baseUrl = it.trim() })
                     .component
-            }
+            }.rowComment("Con una suscripción (Claude Code, Cursor) aquí va la ruta del programa; vacío = lo busco solo. " +
+                "Para Gemini usa una clave de Google AI Studio: los términos de Antigravity no permiten usar su suscripción desde otras aplicaciones.")
             row("Modelo:") {
                 modelField = textField().columns(COLUMNS_MEDIUM)
                     .bindText({ settings.state.model.orEmpty() }, { settings.state.model = it.trim() })
@@ -93,6 +97,7 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
             row {
                 button("Probar conexión") { testConnection() }
                 status = label("").component
+                syncSubscriptionUi(shown)
             }
             row {
                 comment("Tu código se envía solo al proveedor que elijas, y solo cuando pides una revisión, preguntas en el chat, pides una pista o enciendes el tutor en un archivo.")
@@ -196,8 +201,26 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
             modelField.text = p.defaultModel
         }
         keyField.text = editedKeys[p] ?: loadedKeys[p].orEmpty()
-        if (editedKeys[p] == null && loadedKeys[p] == null) loadKey(p)
-        status.text = if (p.defaultModel.isEmpty()) "Pulsa «Cargar modelos» para elegir uno." else ""
+        if (!p.isSubscription && editedKeys[p] == null && loadedKeys[p] == null) loadKey(p)
+        syncSubscriptionUi(p)
+        if (!p.isSubscription) status.text = if (p.defaultModel.isEmpty()) "Pulsa «Cargar modelos» para elegir uno." else ""
+    }
+
+    /**
+     * Con suscripción no hay clave: el programa usa tu sesión. El campo de URL es la ruta del programa, y el aviso dice
+     * si lo encontré y cómo iniciar sesión.
+     */
+    private fun syncSubscriptionUi(p: ProviderPreset) {
+        keyField.isEnabled = !p.isSubscription
+        val tool = p.cli
+        baseUrlField.emptyText.text = if (tool != null) "vacío = buscar `${tool.executable}` solo" else ""
+        if (tool == null) return
+        val found = JvmProcessRunner.find(tool, baseUrlField.text.trim().takeIf { it.isNotEmpty() })
+        show(
+            if (found != null) "Encontré ${tool.executable} en $found. Usa tu suscripción: sin costo por llamada, pero más lento que la API (unos segundos más). " +
+                "Si es la primera vez: ${tool.loginHint}"
+            else "No encontré ${tool.executable}. Instálalo o escribe su ruta arriba. ${tool.loginHint}"
+        )
     }
 
     private fun uiConfig() = AiConfig(shown, baseUrlField.text.trim(), modelField.text.trim(), String(keyField.password).trim())
@@ -208,10 +231,10 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
 
     private fun loadModels(anchor: JComponent) {
         val cfg = uiConfig()
-        if (cfg.baseUrl.isBlank()) return show("Escribe la URL base.")
+        if (cfg.baseUrl.isBlank() && !cfg.preset.isSubscription) return show("Escribe la URL base.")
         if (cfg.preset.needsKey && cfg.apiKey.isNullOrBlank()) return show("Escribe la clave para ver los modelos.")
         show("Cargando modelos…")
-        AiClients.create(cfg).listModels().whenComplete { models, err ->
+        futureOf { AiClients.create(cfg).listModels() }.whenComplete { models, err ->
             ApplicationManager.getApplication().invokeLater({
                 when {
                     err != null -> show(AiClients.friendly(err, cfg))
@@ -234,7 +257,7 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
         val cfg = uiConfig()
         AiClients.validate(cfg)?.let { return show(it) }
         show("Probando…")
-        AiClients.create(cfg).complete("Responde solo con la palabra OK.", listOf(ChatMessage("user", "Prueba de conexión")), 20)
+        futureOf { AiClients.create(cfg).complete("Responde solo con la palabra OK.", listOf(ChatMessage("user", "Prueba de conexión")), 20) }
             .whenComplete { reply, err ->
                 ApplicationManager.getApplication().invokeLater({
                     show(if (err != null) AiClients.friendly(err, cfg) else "Conectado con ${cfg.model}. Respuesta: ${reply?.text.orEmpty().trim().take(60)}")

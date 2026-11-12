@@ -369,7 +369,7 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         val files = step.edits.map { it.path }.distinct().map { p -> p.substringAfterLast('/') to lines.getOrPut(p) { linesOf(p, vfOf(p)) }.joinToString("\n") }
         val print = fingerprint(step, lines)
         val settings = CoachSettings.getInstance()
-        val options = settings.promptOptions()
+        val options = settings.promptOptions().forFile(step.edits.firstOrNull()?.path)
         cs.launch {
             var cfg: dev.kmpcoach.core.AiConfig? = null
             try {
@@ -377,9 +377,11 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
                 cfg = c
                 val rules = withContext(Dispatchers.IO) { runCatching { ProjectRulesReader.getInstance(project).read() }.getOrNull() }
                 val system = StepPrompts.verifySystem(options)
-                val user = StepPrompts.verifyUser(step, files, rules)
+                // El chat donde la otra IA dio el plan: conoce todo el proyecto, así que juzga con su contexto.
+                val session = step.edits.firstOrNull()?.let { vfOf(it.path) }?.let { TutorService.getInstance(project).sessionFor(it) }
+                val user = StepPrompts.verifyUser(step, files, rules, session, project.basePath)
                 // Con espacio de sobra: si el JSON llega cortado no se puede leer (así fallaba con 300 y modelos que escriben más).
-                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1000).await()
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1000)
                 UsageTracker.getInstance().record(UsageKind.STEP, step.edits.firstOrNull()?.fileName, reply.usage, system + user, reply.text, reply.limits)
                 verdicts[step.id] = print to StepPrompts.parseVerdict(reply.text)
             } catch (e: CancellationException) {

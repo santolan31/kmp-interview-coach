@@ -2,7 +2,17 @@
 
 > Antes se llamaba *KMP Interview Coach*. El nombre del repositorio y el id del plugin no cambian, para que las actualizaciones sigan llegando.
 
-Plugin para **Android Studio** e **IntelliJ IDEA** que te ayuda a **entender el código que escribes** (el tuyo o el que te generó una IA) mientras programas en Android y Kotlin Multiplatform. No te da el código: te guía con pistas, como en una prueba técnica. Cada persona usa **su propia API de IA**.
+Plugin para **Android Studio** e **IntelliJ IDEA** que te ayuda a **entender el código que escribes** (el tuyo o el que te generó una IA) mientras programas en Android y Kotlin Multiplatform. No te da el código: te guía con pistas, como en una prueba técnica. Cada persona usa **su propia clave de API** o **su suscripción** (Claude Code, Cursor).
+
+## También para VS Code, Cursor y Antigravity
+
+La misma lógica (escrita una sola vez en Kotlin Multiplatform, módulo `core/`) funciona como extensión de VS Code y sus derivados, en cualquier lenguaje:
+
+1. Descarga `mentor-<versión>.vsix` del último [Release](https://github.com/santolan31/kmp-interview-coach/releases).
+2. En el editor: paleta de comandos › **Extensions: Install from VSIX…** › elige el archivo.
+3. Paleta › **Mentor: Elegir proveedor**.
+
+Detalles en [vscode/README.md](vscode/README.md).
 
 ## Pistas en vez de soluciones
 

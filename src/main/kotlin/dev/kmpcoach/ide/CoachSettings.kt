@@ -78,8 +78,12 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
     fun modelKey(): String = "${preset.id}/${state.model.orEmpty().ifBlank { preset.defaultModel }}"
 
     /** Precio del modelo actual; null si no lo configuraste o si lo configuraste para otro modelo. */
-    fun price(): ModelPrice? =
-        if (state.pricedModel == modelKey()) ModelPrice.parse(state.priceInputPerM, state.priceOutputPerM) else null
+    fun price(): ModelPrice? = when {
+        // Con suscripción las llamadas no se cobran aparte: el panel muestra solo tokens.
+        preset.isSubscription -> null
+        state.pricedModel == modelKey() -> ModelPrice.parse(state.priceInputPerM, state.priceOutputPerM)
+        else -> null
+    }
 
     fun modelLabel(): String = "${preset.label} · ${state.model.orEmpty().ifBlank { preset.defaultModel }}"
 

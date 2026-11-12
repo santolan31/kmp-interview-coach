@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.2.20"
+    id("org.jetbrains.kotlin.multiplatform") version "2.2.20" apply false
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
@@ -22,6 +23,10 @@ dependencies {
         intellijIdeaCommunity(providers.gradleProperty("platformVersion"))
         // Kotlin viene incluido en IntelliJ IDEA y en Android Studio; el plugin registra sus anotadores para el lenguaje Kotlin.
         bundledPlugin("org.jetbrains.kotlin")
+    }
+    // La lógica compartida. Sin la biblioteca estándar de Kotlin: el IDE ya trae la suya.
+    implementation(project(":core")) {
+        exclude(group = "org.jetbrains.kotlin")
     }
     testImplementation("junit:junit:4.13.2")
 }

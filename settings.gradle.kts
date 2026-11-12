@@ -4,3 +4,7 @@ plugins {
 }
 
 rootProject.name = "kmp-interview-coach"
+
+// La lógica del Mentor (pasos, TODO, prompts, clientes de IA…) en Kotlin Multiplatform: la usan el plugin de
+// Android Studio (JVM) y la extensión de VS Code (JavaScript).
+include(":core")

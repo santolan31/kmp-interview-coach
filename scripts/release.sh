@@ -16,6 +16,14 @@ VERSION=$(grep '^pluginVersion=' gradle.properties | cut -d= -f2)
 SINCE=$(grep '^pluginSinceBuild=' gradle.properties | cut -d= -f2)
 TAG="v$VERSION"
 ZIP="build/distributions/kmp-interview-coach-$VERSION.zip"
+VSIX="build/distributions/mentor-$VERSION.vsix"
+
+# El plugin y la extensión de VS Code salen juntos y con el mismo número de versión.
+VSIX_VERSION=$(node -p "require('./vscode/package.json').version")
+if [ "$VSIX_VERSION" != "$VERSION" ]; then
+    echo "vscode/package.json dice $VSIX_VERSION y gradle.properties dice $VERSION: deben ser iguales." >&2
+    exit 1
+fi
 
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "La versión $VERSION ya está publicada. Sube pluginVersion en gradle.properties." >&2
@@ -28,7 +36,12 @@ fi
 
 # En la terminal de Android Studio, ANDROID_PREFS_ROOT choca con ANDROID_USER_HOME y rompe Gradle.
 # Sin la caché de Gradle: un release se compila desde cero (la caché puede devolver clases de test viejas).
-env -u ANDROID_PREFS_ROOT ./gradlew clean test buildPlugin --no-build-cache --console=plain
+# :core:allTests corre la lógica compartida en JVM (Android Studio) y en JavaScript (VS Code).
+env -u ANDROID_PREFS_ROOT ./gradlew clean :core:allTests test buildPlugin :core:jsNodeProductionLibraryDistribution --no-build-cache --console=plain
+
+# Extensión de VS Code (también Cursor y Antigravity): instala sus herramientas, corre sus tests y la empaqueta.
+# `< /dev/null`: vsce nunca se queda esperando una respuesta por teclado.
+(cd vscode && npm ci --no-audit --no-fund && npm test && npx vsce package --no-dependencies -o "../$VSIX" < /dev/null)
 
 cat > updatePlugins.xml <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +64,8 @@ if [ -n "$(git status --porcelain updatePlugins.xml)" ]; then
     git commit -m "release: $VERSION"
 fi
 git push origin HEAD:main
-gh release create "$TAG" "$ZIP" --repo "$REPO" --title "$VERSION" --generate-notes
+gh release create "$TAG" "$ZIP" "$VSIX" --repo "$REPO" --title "$VERSION" --generate-notes
 
-echo "Publicada la $VERSION. En Android Studio: Settings › Plugins › Installed › Update (o espera el aviso de actualización)."
+echo "Publicada la $VERSION."
+echo "  Android Studio: Settings › Plugins › Installed › Update (o espera el aviso de actualización)."
+echo "  VS Code: descarga mentor-$VERSION.vsix del Release y usa «Extensions: Install from VSIX…»."

@@ -15,7 +15,7 @@ import dev.kmpcoach.core.Mastery
 import dev.kmpcoach.core.ReviewCard
 import dev.kmpcoach.core.asList
 import dev.kmpcoach.core.asMap
-import java.time.LocalDate
+import dev.kmpcoach.core.IsoDate
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -58,7 +58,7 @@ class LearnerProfile : SimplePersistentStateComponent<LearnerProfile.Data>(Data(
     fun recordSolved(concept: String, hintsUsed: Int) {
         val k = Mastery.key(concept).ifEmpty { return }
         val all = concepts().toMutableMap()
-        all[k] = Mastery.record(all[k] ?: ConceptStats(), hintsUsed, LocalDate.now())
+        all[k] = Mastery.record(all[k] ?: ConceptStats(), hintsUsed, IsoDate.today())
         state.concepts = Json.write(all.mapValues { it.value.toMap() })
         fire()
     }
@@ -66,18 +66,18 @@ class LearnerProfile : SimplePersistentStateComponent<LearnerProfile.Data>(Data(
     /** Agrega [concept] al repaso espaciado (si ya está, no cambia nada). */
     @Synchronized
     fun addReview(concept: String) {
-        val updated = Leitner.add(cards(), concept, LocalDate.now())
+        val updated = Leitner.add(cards(), concept, IsoDate.today())
         state.cards = Json.write(updated.map { it.toMap() })
         fire()
     }
 
-    fun dueReview(): ReviewCard? = Leitner.due(cards(), LocalDate.now())
-    fun dueCount(): Int = cards().count { !LocalDate.parse(it.due).isAfter(LocalDate.now()) }
-    fun reviewedToday(): Boolean = state.lastReviewDay == LocalDate.now().toString()
+    fun dueReview(): ReviewCard? = Leitner.due(cards(), IsoDate.today())
+    fun dueCount(): Int = cards().count { !IsoDate.parse(it.due).isAfter(IsoDate.today()) }
+    fun reviewedToday(): Boolean = state.lastReviewDay == IsoDate.today().toString()
 
     @Synchronized
     fun answerReview(card: ReviewCard, correct: Boolean) {
-        val today = LocalDate.now()
+        val today = IsoDate.today()
         val updated = cards().map { if (it.concept == card.concept) Leitner.answer(it, correct, today) else it }
         state.cards = Json.write(updated.map { it.toMap() })
         state.lastReviewDay = today.toString()

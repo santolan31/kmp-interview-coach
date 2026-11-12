@@ -6,6 +6,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import dev.kmpcoach.core.AntigravityPlans
 import dev.kmpcoach.core.ClaudeSessions
 import dev.kmpcoach.core.SessionTurn
 import dev.kmpcoach.core.StepParser
@@ -31,7 +32,11 @@ class AiSessionContext(private val project: Project) {
     /** El último mensaje de la IA que trae pasos («## Paso 5.1 …»), para la guía del editor. */
     class StepsSource(val file: File, val text: String, val at: String)
 
+    /** Un plan de Antigravity: su archivo Markdown, su texto y cuándo cambió. */
+    class Plan(val file: File, val text: String, val modified: Long)
+
     private val cache = ConcurrentHashMap<String, Cached>()
+    private val planCache = ConcurrentHashMap<String, Pair<Long, String>>()
     private val peeked = ConcurrentHashMap<String, Found>()
     private val peekedAt = ConcurrentHashMap<String, Long>()
     private val computing = AtomicBoolean(false)
@@ -84,14 +89,58 @@ class AiSessionContext(private val project: Project) {
      */
     fun find(fileName: String?): Found? {
         if (!enabled()) return null
-        val (f, automatic) = pick(fileName) ?: return null
+        chosenPlan()?.let { p -> return Found(p.file, AntigravityPlans.excerpt(p.text), planLabel(p), false) }
+        val claude = pick(fileName)
+        // Si el plan más reciente que habla del archivo es de Antigravity, el Mentor lee ese.
+        antigravityFirst(fileName, claude)?.let { p ->
+            return Found(p.file, AntigravityPlans.excerpt(p.text), planLabel(p), true)
+        }
+        val (f, automatic) = claude ?: return null
         val t = turns(f)
         return ClaudeSessions.excerpt(t, fileName)?.let { Found(f, it, ClaudeSessions.lastRequest(t), automatic) }
     }
 
+    /**
+     * Planes de Antigravity de la última semana: los Markdown del «cerebro» de cada conversación (sus conversaciones
+     * se guardan en binario y no se pueden leer). Del más reciente al más antiguo. Lee disco.
+     */
+    fun antigravityPlans(): List<Plan> {
+        val home = System.getProperty("user.home")
+        val limit = System.currentTimeMillis() - PLAN_RECENT_MS
+        return AntigravityPlans.BRAIN_DIRS.flatMap { File(home, it).listFiles()?.toList().orEmpty() }
+            .flatMap { dir -> dir.listFiles { f -> f.isFile && AntigravityPlans.isPlanFile(f.name) && f.lastModified() >= limit }.orEmpty().toList() }
+            .mapNotNull { f ->
+                val text = planCache[f.path]?.takeIf { it.first == f.lastModified() }?.second
+                    ?: runCatching { f.readText() }.getOrNull()?.also { planCache[f.path] = f.lastModified() to it }
+                    ?: return@mapNotNull null
+                if (AntigravityPlans.isPlan(text)) Plan(f, text, f.lastModified()) else null
+            }
+            .sortedByDescending { it.modified }
+    }
+
+    /**
+     * El plan de Antigravity que habla del archivo, si es más nuevo que la última vez que Claude Code lo mencionó. Si
+     * elegiste una conversación de Claude a mano, manda la tuya.
+     */
+    private fun antigravityFirst(fileName: String?, claude: Pair<File, Boolean>?): Plan? {
+        if (fileName == null || claude?.second == false) return null
+        val plan = antigravityPlans().firstOrNull { AntigravityPlans.mentions(it.text, fileName) } ?: return null
+        val claudeAt = claude?.first?.let { ClaudeSessions.lastMention(turns(it), fileName) }
+        return plan.takeIf { claudeAt == null || iso(it.modified) > claudeAt }
+    }
+
+    private fun iso(ms: Long) = java.time.Instant.ofEpochMilli(ms).toString()
+
+    private fun planLabel(p: Plan) = "Antigravity · " + (AntigravityPlans.title(p.text) ?: p.file.parentFile.name)
+
+    /** El plan de Antigravity que elegiste a mano en el panel, si elegiste uno. */
+    private fun chosenPlan(): Plan? = chosen?.takeIf { it.isFile && it.extension == "md" }?.let { f ->
+        runCatching { f.readText() }.getOrNull()?.takeIf(AntigravityPlans::isPlan)?.let { Plan(f, it, f.lastModified()) }
+    }
+
     /** La sesión elegida a mano o, si no, la más reciente que habla del archivo. El booleano dice si fue automática. */
     private fun pick(fileName: String?): Pair<File, Boolean>? {
-        chosen?.takeIf { it.isFile }?.let { return it to false }
+        chosen?.takeIf { it.isFile && it.extension == "jsonl" }?.let { return it to false }
         val sessions = candidates()
         val best = fileName?.let { name ->
             sessions.mapNotNull { f -> ClaudeSessions.lastMention(turns(f), name)?.let { f to it } }.maxByOrNull { it.second }?.first
@@ -102,7 +151,11 @@ class AiSessionContext(private val project: Project) {
     /** El último mensaje con pasos de la sesión que corresponde al archivo. Lee disco: fuera del hilo de la interfaz. */
     fun latestSteps(fileName: String?): StepsSource? {
         if (!enabled()) return null
-        val (f, _) = pick(fileName) ?: return null
+        chosenPlan()?.let { p -> return StepsSource(p.file, AntigravityPlans.toSteps(p.text), iso(p.modified)) }
+        val claude = pick(fileName)
+        // Un plan de Antigravity se traduce al formato de la guía: cada archivo que cambia es un paso.
+        antigravityFirst(fileName, claude)?.let { p -> return StepsSource(p.file, AntigravityPlans.toSteps(p.text), iso(p.modified)) }
+        val (f, _) = claude ?: return null
         val turn = turns(f).lastOrNull { it.role == "assistant" && StepParser.hasSteps(it.text) } ?: return null
         return StepsSource(f, turn.text, turn.at)
     }
@@ -145,12 +198,15 @@ class AiSessionContext(private val project: Project) {
             mins < 48 * 60 -> "hace ${mins / 60} h"
             else -> "hace ${mins / 1440} días"
         }
+        if (f.extension == "md") return "Plan: " + (runCatching { AntigravityPlans.title(f.readText()) }.getOrNull() ?: f.parentFile.name) + " · " + ago
         return (ClaudeSessions.lastRequest(turns(f)) ?: f.nameWithoutExtension) + " · " + ago
     }
 
     companion object {
         private const val TAIL_BYTES = 600_000L
         private const val RECENT_MS = 3L * 24 * 3600 * 1000
+        /** Un plan dura más que una conversación: se sigue días después de escribirlo. */
+        private const val PLAN_RECENT_MS = 7L * 24 * 3600 * 1000
         private const val MAX_SESSIONS = 8
         private const val PEEK_EVERY_MS = 10_000L
         fun getInstance(project: Project): AiSessionContext = project.service()

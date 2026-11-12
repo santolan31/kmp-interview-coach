@@ -1,0 +1,6 @@
+node_modules/
+dist/
+out/
+*.vsix
+# Copiados de src/main/resources/icons/brands del plugin al compilar.
+media/brands/
