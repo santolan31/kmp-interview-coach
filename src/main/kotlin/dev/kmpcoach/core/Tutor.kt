@@ -111,11 +111,14 @@ CONTEXTO: el estudiante sigue un plan paso a paso con otra IA. Extracto de su co
 ${excerpt.trim()}
 ---
 Juzga solo lo que corresponde al paso en el que va. Si algo falla porque un paso siguiente todavía no está hecho, no es un error: díselo como "pregunta" o "mejora", di que es esperado y qué paso lo resuelve. No comentes mejoras ajenas a ese paso.
+El plan de la otra IA manda: ella conoce todo el proyecto y tú solo ves este archivo. No propongas otra forma de hacer lo que el plan ya decidió; si algo del plan te parece mal, pregúntalo sin exigir el cambio.
 """.trimEnd()
     }
 
-    fun reviewUser(challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null) =
-        context(challenge, code, analysis, fileName) + sessionContext(session) + "\n\nRevisa este código y responde solo con el JSON."
+    fun reviewUser(
+        challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null, rules: ProjectRules.Found? = null,
+    ) = context(challenge, code, analysis, fileName) + ProjectRules.context(rules) + sessionContext(session) +
+        "\n\nRevisa este código y responde solo con el JSON. Un solo comentario por problema: no repitas lo mismo como mejora y como pregunta."
 
     /**
      * Mensaje con el que el estudiante responde a un comentario de la revisión. Cita el comentario para que el tutor
@@ -127,9 +130,12 @@ Juzga solo lo que corresponde al paso en el que va. Si algo falla porque un paso
         return "Respondo a tu comentario $where (${type.label}: «$quoted»):\n${answer.trim()}"
     }
 
-    fun chatSystem(o: PromptOptions, challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null) = """
+    fun chatSystem(
+        o: PromptOptions, challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null,
+        rules: ProjectRules.Found? = null,
+    ) = """
 Eres un mentor de Android y Kotlin Multiplatform que ayuda a un estudiante de nivel ${o.level.label} a entender el código que escribe, el suyo o el que le generó una IA. Responde sus preguntas en 120 palabras o menos, de forma directa y concreta, y refiérete a líneas de su código cuando ayude. Explica el porqué de las cosas. No le des la solución completa: guíalo con pistas y, si hace falta un ejemplo, usa otros datos distintos a los de su código. Si le hiciste preguntas de comprensión y las responde, dile qué está bien y qué no; si falló, dale una pista en vez de la respuesta. Si responde a un comentario tuyo de la revisión (empieza con «Respondo a tu comentario»), evalúa su respuesta: di en una frase si va bien, qué acierta y qué le falta, y termina con una sola pregunta o pista si aún no lo tiene. Si pide la solución, dale el siguiente paso y recuérdale que puede pulsar «Me rindo» en el panel. ${lang(o)}
 
-${if (code.isBlank()) "El estudiante no tiene un archivo Kotlin abierto." else context(challenge, code, analysis, fileName)}${sessionContext(session)}
+${if (code.isBlank()) "El estudiante no tiene un archivo Kotlin abierto." else context(challenge, code, analysis, fileName)}${ProjectRules.context(rules)}${sessionContext(session)}
 """.trim()
 }

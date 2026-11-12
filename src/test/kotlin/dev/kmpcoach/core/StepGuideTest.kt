@@ -161,6 +161,54 @@ class StepGuideTest {
         assertTrue(all.todos.all { it.state == TodoState.DONE })
     }
 
+    // Tu caso real de MacoTopBar: la flecha de la dirección tiene el mismo `tint = …textPlaceholder` que la campana.
+    private val withArrow = listOf(
+        "fun MacoTopBar(",                                                     // 0
+        "    selectedAddress: String,",
+        "    onAddressClick: () -> Unit,",
+        "    onNotificationClick: () -> Unit,",
+        "    modifier: Modifier = Modifier,",
+        ") {",                                                                 // 5
+        "    Row {",
+        "        Icon(",
+        "            imageVector = Icons.Default.ArrowDropDown,",
+        "            tint = MaterialTheme.colorScheme.extended.textPlaceholder,",  // 9: la flecha, no es del paso
+        "            modifier = Modifier.size(16.dp)",                         // 10
+        "        )",
+        "        Icon(",
+        "            imageVector = Icons.Default.Notifications,",
+        "            tint = MaterialTheme.colorScheme.extended.textPlaceholder,",  // 14: la campana
+        "            modifier = Modifier",                                     // 15
+        "                .size(16.dp)",
+        "                .clickable(onClick = onNotificationClick)",
+        "        )",
+        "    }",
+        "}",                                                                   // 20
+    )
+
+    @Test
+    fun aRepeatedLineElsewhereIsNotTheTodo() {
+        val edit = steps[0].edits[1]
+        val clickDone = withArrow.map { if (".clickable(" in it) "                .clickable(enabled = isEnabled, onClick = { onNotificationClick?.invoke() })" else it }
+            .toMutableList().apply { add(12, "        val isEnabled = onNotificationClick != null") }
+        // La campana (ahora línea 15) sigue igual: falta el TODO 3 ahí, no en la flecha (línea 9).
+        val pending = StepMatcher.status(clickDone, edit, hasErrors = false, seenPlaced = false)
+        assertEquals(TodoState.MISSING, pending.todos[1].state)
+        assertEquals(15, pending.todos[1].line)
+        assertFalse(pending.complete)
+
+        // Cambias el tint de la campana: completo, aunque la flecha siga con la misma línea.
+        val done = clickDone.mapIndexed { i, l -> if (i == 15) "            tint = if (isEnabled) a else b," else l }
+        val st = StepMatcher.status(done, edit, hasErrors = false, seenPlaced = false)
+        assertTrue(st.todos.all { it.state == TodoState.DONE })
+        assertTrue(st.complete)
+
+        // Las líneas del paso: la variable, el tint y el clickable de la campana, nunca la flecha.
+        val covered = StepMatcher.covered(done, edit)
+        assertTrue(covered.containsAll(listOf(12, 15, 18)))
+        assertFalse(9 in covered)
+    }
+
     @Test
     fun deletionIsCompleteWhenTheLineIsGone() {
         val edit = steps[2].edits.single()

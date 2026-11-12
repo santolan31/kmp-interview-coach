@@ -67,6 +67,8 @@ import dev.kmpcoach.ide.CoachSettings
 import dev.kmpcoach.ide.LearnerProfile
 import dev.kmpcoach.ide.LearningService
 import dev.kmpcoach.ide.ProjectContext
+import dev.kmpcoach.ide.ProjectRulesReader
+import dev.kmpcoach.ide.StepGuideService
 import dev.kmpcoach.ide.TutorService
 import dev.kmpcoach.ide.UsageTracker
 import java.awt.BorderLayout
@@ -623,10 +625,17 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private fun sessionLine(h: StringBuilder, file: VirtualFile?) {
         if (file == null || !tutor.isTutorOn(file) || !settings.state.readAiSession) return
         val found = AiSessionContext.getInstance(project).peek(file.name)
+        // Todo lo que el tutor tiene en cuenta: así sabes en qué se basa lo que te dice.
+        val rules = ProjectRulesReader.getInstance(project).peek()
+        val step = runCatching { StepGuideService.getInstance(project).view(file)?.current?.step }.getOrNull()
+        val extra = listOfNotNull(
+            step?.let { "Paso ${esc(it.number)}" },
+            rules?.let { "reglas: ${esc(it.source)}" } ?: "sin AGENTS.md",
+        ).joinToString(" · ")
         val text = if (found == null) {
-            "Contexto: no encontré una conversación reciente de Claude Code en este proyecto. <a href='session'>elegir</a>"
+            "Contexto: no encontré una conversación reciente de Claude Code en este proyecto · $extra. <a href='session'>elegir</a>"
         } else {
-            "Contexto: «${esc(found.lastRequest ?: "conversación sin pedidos")}» · " +
+            "Contexto: «${esc(found.lastRequest ?: "conversación sin pedidos")}» · $extra · " +
                 (if (found.automatic) "elegida sola" else "elegida por ti") + " · <a href='session'>cambiar</a>"
         }
         h.append("<div style='color:$muted;margin-bottom:10px'>$text</div>")
@@ -694,8 +703,11 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
                 body.append(md(m.content))
             }
             if (c.busy) body.append("<br><span style='color:$muted'>Mentor · pensando…</span>")
+            val coveredBy = if (c.resolved) null else tutor.coveringStep(file, c)
             when {
+                c.autoResolved -> body.append("<br><span style='color:$ok'>✓ Resuelto solo: cambiaste el código del que hablaba</span>")
                 c.resolved -> body.append("<br><span style='color:$ok'>✓ Resuelto</span>")
+                coveredBy != null -> body.append("<br><span style='color:$muted'>Oculto en el editor: esa parte la revisa el ${esc(coveredBy)} («¿Cumple el paso?»)</span>")
                 c.type != CommentType.BIEN && !c.busy -> {
                     val reply = if (c.thread.isEmpty()) "Responder" else "Seguir la conversación"
                     body.append("<br><a href='reply:${c.id}'>$reply</a> · <a href='resolve:${c.id}'>Resolver</a>")
@@ -709,6 +721,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             b.append("<a href='review'>Actualizar revisión</a></div>")
         }
         b.append("<div style='margin-top:4px;color:$muted'>")
+        if (fr.sources.isNotEmpty()) b.append("Leí: ${esc(fr.sources.joinToString(" · "))}<br>")
         fr.call?.let { b.append("${callCost(it.usage.inputTokens, it.usage.outputTokens, it.costUsd, it.estimated)} · ") }
         b.append("<a href='clear'>Quitar esta revisión</a></div>")
         h.append(entry(b.toString()))

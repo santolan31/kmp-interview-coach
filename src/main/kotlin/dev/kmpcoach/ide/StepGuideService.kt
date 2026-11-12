@@ -61,6 +61,9 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
 
     class View(val steps: List<GuideStep>, val current: StepView, val next: GuideStep?)
 
+    /** Líneas (0-based) del paso comprobado en un archivo: ahí habla solo el paso, no los comentarios de la revisión. */
+    data class Coverage(val stepLabel: String, val lines: Set<Int>)
+
     private class Source(val at: Long, val value: AiSessionContext.StepsSource?)
 
     private val sources = ConcurrentHashMap<String, Source>()
@@ -80,6 +83,10 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     private val markedFiles = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var viewedId: String? = null
     private var refreshJob: Job? = null
+    /** Por ruta de archivo; se recalcula en cada [refreshMarkers]. Lo lee el anotador, que corre en otro hilo. */
+    private val covered = ConcurrentHashMap<String, Coverage>()
+
+    fun coverage(file: VirtualFile): Coverage? = covered[file.path]
 
     fun isVerifying(step: GuideStep) = step.id in verifying
 
@@ -112,10 +119,36 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         if (project.isDisposed) return
         val tutor = TutorService.getInstance(project)
         val fem = FileEditorManager.getInstance(project)
-        val now = fem.openFiles.filter { markersFor(it).isNotEmpty() }.map { it.path }.toSet()
-        (now + markedFiles).forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::refreshInlays) }
+        val coverageChanged = HashSet<String>()
+        val now = fem.openFiles.filter { f ->
+            val markers = markersFor(f)
+            val c = coverageFor(f, markers)
+            val before = if (c == null) covered.remove(f.path) else covered.put(f.path, c)
+            if (before != c) coverageChanged += f.path
+            markers.isNotEmpty()
+        }.map { it.path }.toSet()
+        // Archivos cerrados: su cobertura ya no hace falta.
+        covered.keys.retainAll(fem.openFiles.map { it.path }.toSet())
+        (now + markedFiles + coverageChanged).forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::refreshInlays) }
+        // Los comentarios que ahora cubre el paso (o que dejó de cubrir) también cambian su subrayado y el panel.
+        coverageChanged.forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::restartHighlighting) }
+        if (coverageChanged.isNotEmpty()) tutor.notifyChanged()
         markedFiles.clear()
         markedFiles += now
+    }
+
+    /** Qué líneas de este archivo son del paso comprobado: dónde está su código y cada marca de lo que falta. */
+    private fun coverageFor(file: VirtualFile, markers: List<Marker>): Coverage? {
+        val src = sources[file.name]?.value ?: return null
+        val step = steps(src).firstOrNull { it.id == viewedId } ?: return null
+        if (step.id !in checked) return null
+        val edits = step.edits.filter { it.path == file.path }
+        if (edits.isEmpty()) return null
+        val lines = linesOf(file.path, file)
+        val set = HashSet<Int>()
+        edits.forEach { set += StepMatcher.covered(lines, it) }
+        markers.forEach { set += it.line }
+        return if (set.isEmpty()) null else Coverage(step.label, set)
     }
 
     /**
@@ -317,8 +350,9 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
             try {
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
+                val rules = withContext(Dispatchers.IO) { runCatching { ProjectRulesReader.getInstance(project).read() }.getOrNull() }
                 val system = StepPrompts.verifySystem(options)
-                val user = StepPrompts.verifyUser(step, files)
+                val user = StepPrompts.verifyUser(step, files, rules)
                 val reply = client.complete(system, listOf(ChatMessage("user", user)), 300).await()
                 UsageTracker.getInstance().record(UsageKind.STEP, step.edits.firstOrNull()?.fileName, reply.usage, system + user, reply.text, reply.limits)
                 verdicts[step.id] = print to StepPrompts.parseVerdict(reply.text)

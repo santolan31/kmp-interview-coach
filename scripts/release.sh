@@ -27,7 +27,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # En la terminal de Android Studio, ANDROID_PREFS_ROOT choca con ANDROID_USER_HOME y rompe Gradle.
-env -u ANDROID_PREFS_ROOT ./gradlew clean test buildPlugin --console=plain
+# Sin la caché de Gradle: un release se compila desde cero (la caché puede devolver clases de test viejas).
+env -u ANDROID_PREFS_ROOT ./gradlew clean test buildPlugin --no-build-cache --console=plain
 
 cat > updatePlugins.xml <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

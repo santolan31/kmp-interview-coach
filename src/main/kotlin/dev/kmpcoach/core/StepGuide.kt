@@ -26,6 +26,20 @@ data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>) {
     /** Identifica el cambio aunque el mensaje se vuelva a leer. */
     val key: String get() = "$path#$line#${diff.hashCode()}"
 
+    /** Código que se queda igual justo antes del cambio: ubica el cambio aunque haya líneas repetidas en el archivo. */
+    val anchorBefore: List<String>
+        get() {
+            val first = diff.indexOfFirst { it.kind != ' ' }.takeIf { it >= 0 } ?: return emptyList()
+            return diff.subList(0, first).map { it.text }.filter { it.isNotBlank() }.takeLast(2)
+        }
+
+    /** Código que se queda igual justo después del cambio. */
+    val anchorAfter: List<String>
+        get() {
+            val last = diff.indexOfLast { it.kind != ' ' }.takeIf { it >= 0 } ?: return emptyList()
+            return diff.subList(last + 1, diff.size).map { it.text }.filter { it.isNotBlank() }.take(2)
+        }
+
     /**
      * Cada TODO con lo que permite saber si ya lo hiciste aunque no hayas puesto el esqueleto: las líneas que reemplaza
      * (las que salen justo antes) o lo que debe existir después (por ejemplo `val isNotificationEnabled`).
@@ -44,7 +58,16 @@ data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>) {
                 while (k >= 0 && diff[k].kind == '-') { removed.add(0, diff[k].text); k-- }
                 val before = diff.subList(0, i).filter { it.kind == ' ' && it.text.isNotBlank() }.map { it.text }.takeLast(2)
                 val after = diff.subList(j, diff.size).filter { it.kind == ' ' && it.text.isNotBlank() }.map { it.text }.take(2)
-                out += TodoSpec("TODO ${m.groupValues[1]}", m.groupValues[2].trim(), removed, keyOf(diff.subList(i + 1, j).map { it.text }), before, after)
+                // Lo que rodea pegado a este TODO (sin saltar otros cambios): dice cuál de las líneas repetidas es la suya.
+                val anchorBefore = ArrayList<String>()
+                while (k >= 0 && diff[k].kind == ' ' && anchorBefore.size < 2) { if (diff[k].text.isNotBlank()) anchorBefore.add(0, diff[k].text); k-- }
+                val anchorAfter = ArrayList<String>()
+                var a = j
+                while (a < diff.size && diff[a].kind == ' ' && anchorAfter.size < 2) { if (diff[a].text.isNotBlank()) anchorAfter += diff[a].text; a++ }
+                out += TodoSpec(
+                    "TODO ${m.groupValues[1]}", m.groupValues[2].trim(), removed, keyOf(diff.subList(i + 1, j).map { it.text }),
+                    before, after, anchorBefore, anchorAfter,
+                )
                 i = j
             }
             return out
@@ -63,7 +86,11 @@ data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>) {
     }
 }
 
-/** Un TODO del esqueleto: su texto, las líneas que reemplaza, lo que debe existir después y el código que lo rodea. */
+/**
+ * Un TODO del esqueleto: su texto, las líneas que reemplaza, lo que debe existir después y el código que lo rodea.
+ * [anchorBefore]/[anchorAfter]: las líneas que se quedan igual pegadas a él, para encontrarlo aunque lo que reemplaza
+ * aparezca también en otra parte del archivo (por ejemplo el mismo `tint = …` en dos iconos).
+ */
 data class TodoSpec(
     val label: String,
     val text: String,
@@ -71,6 +98,8 @@ data class TodoSpec(
     val key: String?,
     val before: List<String>,
     val after: List<String>,
+    val anchorBefore: List<String> = emptyList(),
+    val anchorAfter: List<String> = emptyList(),
 )
 
 /** Un paso del plan que dio la IA: «## Paso 5.1: el componente acepta un callback nulo». */
@@ -210,6 +239,52 @@ object StepMatcher {
 
     private fun nearest(matches: List<IntArray>, hint: Int): IntArray? = matches.minByOrNull { kotlin.math.abs(it.first() - hint) }
 
+    /** Un ancla sirve si tiene alguna línea con contenido: «)» o «}» aparecen en cualquier parte. */
+    private fun strong(lines: List<String>) = lines.any { norm(it).length >= 8 }
+
+    /**
+     * Líneas del archivo (0-based) donde está ahora un trozo de código, entre el código que lo precede ([before]) y el que
+     * lo sigue ([after]). [size]: cuántas líneas suele ocupar, por si solo se encuentra un ancla. Null si no hay anclas.
+     */
+    fun locate(file: List<String>, before: List<String>, after: List<String>, size: Int, hint: Int): IntRange? {
+        if (file.isEmpty()) return null
+        val last = file.size - 1
+        val a = if (strong(before)) nearest(find(file, before), hint)?.last() else null
+        val afters = if (strong(after)) find(file, after).map { it.first() } else emptyList()
+        val span = size + 3
+        if (a != null) {
+            val b = afters.filter { it > a }.minOrNull()
+            return if (b != null && b - a <= span + 30) (a + 1)..(b - 1) else (a + 1)..minOf(last, a + span)
+        }
+        val b = afters.minByOrNull { kotlin.math.abs(it - hint) } ?: return null
+        return maxOf(0, b - span)..(b - 1)
+    }
+
+    /** Dónde está ahora el código del cambio, según lo que lo rodea; null si no se puede ubicar. */
+    fun region(file: List<String>, edit: StepEdit): IntRange? {
+        val hint = (edit.line - 1).coerceAtLeast(0)
+        nearest(find(file, edit.after), hint)?.let { return it.first()..it.last() }
+        nearest(find(file, edit.before), hint)?.let { return it.first()..it.last() }
+        return locate(file, edit.anchorBefore, edit.anchorAfter, maxOf(edit.removed.size, edit.added.size), hint)
+    }
+
+    /**
+     * Líneas (0-based) que pertenecen a este cambio en el código actual: dónde está el cambio y dónde va cada TODO.
+     * Ahí manda el paso: los comentarios de la revisión en esas líneas se ocultan tras «¿Cumple el paso?».
+     */
+    fun covered(file: List<String>, edit: StepEdit): Set<Int> {
+        if (file.isEmpty()) return emptySet()
+        val hint = (edit.line - 1).coerceAtLeast(0)
+        val out = HashSet<Int>()
+        region(file, edit)?.let { out.addAll(it) }
+        edit.todoSpecs.forEach { s ->
+            // Si el TODO reemplaza líneas, su zona es entre lo que lo rodea; si crea algo nuevo, la línea donde está o va.
+            if (s.removed.any { norm(it).length >= 8 }) locate(file, s.anchorBefore, s.anchorAfter, s.removed.size, hint)?.let { out.addAll(it) }
+            mark(file, s, hint).line?.let { out += it }
+        }
+        return out.filterTo(HashSet()) { it in file.indices }
+    }
+
     private fun todoLine(file: List<String>, label: String): Int? {
         val n = label.removePrefix("TODO ").trim()
         val r = Regex("TODO\\s+$n\\b")
@@ -263,7 +338,12 @@ object StepMatcher {
         val started = placed || seenPlaced || !beforeFound
         // Las líneas que el paso manda reemplazar y que siguen igual: esa parte todavía no la hiciste. Las muy cortas
         // («)», «}») se ignoran porque aparecen en cualquier archivo.
-        val untouched = edit.removed.map(::norm).filter { it.length >= 8 }.any { r -> file.any { norm(it) == r } }
+        // Las que pertenecen a un TODO ya las juzga su marca (ubicada por lo que la rodea); aquí solo las demás, y solo
+        // dentro del cambio: la misma línea en otra parte del archivo (otro icono) no es la del paso.
+        val ofTodos = edit.todoSpecs.flatMap { it.removed }.map(::norm).toSet()
+        val area = region(file, edit)
+        val untouched = edit.removed.map(::norm).filter { it.length >= 8 && it !in ofTodos }
+            .any { r -> file.indices.any { (area == null || it in area) && norm(file[it]) == r } }
         val marks = edit.todoSpecs.map { s -> mark(file, s, hint) }.map { m ->
             if (m.state == TodoState.UNKNOWN && (placed || seenPlaced)) m.copy(state = TodoState.DONE) else m
         }
@@ -281,8 +361,12 @@ object StepMatcher {
         val removed = s.removed.map(::norm).filter { it.length >= 8 }
         if (removed.isNotEmpty()) {
             val left = file.indices.filter { norm(file[it]) in removed }
-            return if (left.isEmpty()) TodoMark(s.label, s.text, TodoState.DONE)
-            else TodoMark(s.label, s.text, TodoState.MISSING, left.minByOrNull { kotlin.math.abs(it - hint) })
+            if (left.isEmpty()) return TodoMark(s.label, s.text, TodoState.DONE)
+            // Si las líneas que lo rodean lo ubican, solo cuentan las que siguen ahí, no una igual en otra parte.
+            val area = locate(file, s.anchorBefore, s.anchorAfter, s.removed.size, hint)
+            val here = if (area == null) left else left.filter { it in area }
+            return if (here.isEmpty()) TodoMark(s.label, s.text, TodoState.DONE, area?.first)
+            else TodoMark(s.label, s.text, TodoState.MISSING, here.minByOrNull { kotlin.math.abs(it - hint) })
         }
         if (s.key != null) {
             val key = norm(s.key)
@@ -306,12 +390,14 @@ data class StepVerdict(val ok: Boolean, val gaps: List<StepGap>) {
 
 object StepPrompts {
     fun verifySystem(o: PromptOptions) = """
-Eres un mentor de Android y Kotlin Multiplatform. El estudiante (nivel ${o.level.label}) sigue un paso que le dio otra IA y quiere saber si su código ya lo cumple. Compara su código con lo que pide el paso. No le des la solución ni código: si falta algo, dilo en una frase concreta («falta que el color cambie cuando está deshabilitada»). Los TODO del paso son huecos que él debía completar con su propio código, no texto que deba quedar. ${Prompts.lang(o)}
+Eres un mentor de Android y Kotlin Multiplatform. El estudiante (nivel ${o.level.label}) sigue un paso que le dio otra IA y quiere saber si su código ya lo cumple. Compara su código con lo que pide el paso: el paso y las reglas del proyecto mandan; no pidas nada que ellos no pidan ni propongas otra forma de hacerlo. Los TODO del paso son huecos que él debía completar con su propio código, no texto que deba quedar.
+Si falta algo, sé explícito: una frase con lo que debe quedar para que esté correcto y en qué parte («la campana activa debe usar el mismo color que tenía antes del cambio; ahora usa `primary`»). Puedes nombrar la API o el valor del tema que corresponde, pero no escribas el código completo. Una sola frase por cosa que falte: no repitas lo mismo con otras palabras. ${Prompts.lang(o)}
 Responde solo con JSON: {"cumple": true|false, "faltan": [{"archivo": "Nombre.kt", "linea": 82, "que": "una frase"}]}
 "linea" es el número de línea del código actual (el número antes de "|") donde está o debería ir lo que falta. Un elemento por cada cosa que falte, como máximo 4; lista vacía si cumple.
 """.trim()
 
-    fun verifyUser(step: GuideStep, files: List<Pair<String, String>>): String = buildString {
+    fun verifyUser(step: GuideStep, files: List<Pair<String, String>>, rules: ProjectRules.Found? = null): String = buildString {
+        ProjectRules.context(rules).takeIf { it.isNotEmpty() }?.let { appendLine(it.trim()); appendLine() }
         appendLine("PASO: ${step.label}")
         step.verify?.let { appendLine("Cómo se verifica según la IA: $it") }
         appendLine()

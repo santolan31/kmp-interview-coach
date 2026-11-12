@@ -188,8 +188,9 @@ Responde solo con JSON con esta forma:
 
     fun hintUser(
         code: String, fileName: String, problems: List<IdeProblem>, previous: List<Hint>, focusLine: Int?, level: HintLevel,
-        goal: String? = null, mastered: List<String> = emptyList(),
+        goal: String? = null, mastered: List<String> = emptyList(), rules: ProjectRules.Found? = null,
     ) = buildString {
+        ProjectRules.context(rules).takeIf { it.isNotEmpty() }?.let { appendLine(it.trim()); appendLine() }
         appendLine("ARCHIVO: $fileName")
         if (goal != null) appendLine("Lo que el estudiante intenta hacer ahora: $goal")
         if (mastered.isNotEmpty()) {
@@ -223,7 +224,11 @@ El estudiante se rindió con un problema después de intentarlo. Ahora SÍ le mu
 Máximo 250 palabras. Código entre backticks. ${Prompts.lang(o)}
 """.trim()
 
-    fun giveUpUser(code: String, fileName: String, problems: List<IdeProblem>, hints: List<Hint>, focusLine: Int?) = buildString {
+    fun giveUpUser(
+        code: String, fileName: String, problems: List<IdeProblem>, hints: List<Hint>, focusLine: Int?, rules: ProjectRules.Found? = null,
+    ) = buildString {
+        // La solución también sigue las reglas del proyecto: es justo donde más fácil se cuela código que no encaja.
+        ProjectRules.context(rules).takeIf { it.isNotEmpty() }?.let { appendLine(it.trim()); appendLine() }
         appendLine("ARCHIVO: $fileName")
         appendLine()
         problemsBlock(this, problems)
