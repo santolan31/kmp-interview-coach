@@ -13,6 +13,11 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.colors.CodeInsightColors
+import com.intellij.openapi.editor.markup.HighlighterLayer
+import com.intellij.openapi.editor.markup.HighlighterTargetArea
+import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.RangeMarker
@@ -54,6 +59,7 @@ import dev.kmpcoach.core.StaleComments
 import dev.kmpcoach.core.StuckTracker
 import dev.kmpcoach.core.TutorReview
 import dev.kmpcoach.core.UsageKind
+import dev.kmpcoach.core.completeFull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -163,6 +169,8 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     private val waitingStuck = ConcurrentHashMap.newKeySet<String>()
     /** Lo último dibujado en cada archivo: si no cambió, no se toca el editor (y no se mueve el scroll). Solo EDT. */
     private val drawn = HashMap<String, String>()
+    /** Subrayados de las líneas comentadas, por archivo y editor. Solo EDT. */
+    private val underlines = HashMap<String, List<Pair<Editor, RangeHighlighter>>>()
     private val autoResolveJobs = ConcurrentHashMap<String, Job>()
 
     // ---------- consultas para la UI ----------
@@ -297,7 +305,6 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             hiddenInEditor.remove(url)
             hintSessions[url]?.let { if (it.hints.isNotEmpty()) it.showInEditor = true }
             refreshInlays(file)
-            restartHighlighting(file)
             // Al llegar a un archivo desde la guía de pasos no hace falta gastar una llamada: ya sabes qué hacer.
             if (withFirstHelp) firstHelp(file)
         } else {
@@ -308,7 +315,6 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
             hiddenInEditor += url
             hintSessions[url]?.showInEditor = false
             refreshInlays(file)
-            restartHighlighting(file)
         }
         fire()
     }
@@ -410,7 +416,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val rules = rules()
                 val user = Prompts.reviewUser(challenge, text, analysis, file.name, session, rules)
                 val sources = listOfNotNull(file.name, session?.let { "tu conversación con Claude Code" }, rules?.source)
-                val reply = client.complete(system, listOf(ChatMessage("user", user)), 1800).await()
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1800).await()
                 val usage = UsageTracker.getInstance()
                 usage.record(if (auto) UsageKind.LIVE else UsageKind.REVIEW, file.name, reply.usage, system + user, reply.text, reply.limits)
                 val call = usage.lastCall
@@ -465,14 +471,12 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         fr.stale = document.text != text
         reviews[url] = fr
         refreshInlays(file)
-        restartHighlighting(file)
     }
 
     fun clearReview(file: VirtualFile) {
         val url = file.url
         reviews.remove(url)?.comments?.forEach { it.marker.dispose() }
         refreshInlays(file)
-        restartHighlighting(file)
         fire()
     }
 
@@ -482,6 +486,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         val doc = FileDocumentManager.getInstance().getCachedDocument(file)
         if (doc == null) {
             inlays.remove(url)?.forEach { Disposer.dispose(it) }
+            underlines.remove(url)
             drawn.remove(url)
             return
         }
@@ -511,11 +516,18 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         if (signature == drawn[url] && old.all { it.isValid }) return
         drawn[url] = signature
         val created = ArrayList<Inlay<*>>()
+        val oldMarks = underlines.remove(url).orEmpty()
+        val marks = ArrayList<Pair<Editor, RangeHighlighter>>()
         for (editor in editors) {
           // Quitar y poner bloques sobre lo que estás mirando movería el scroll: se conserva la posición visible.
           EditorScrollingPositionKeeper.perform(editor, false) {
             old.filter { it.editor === editor }.forEach { Disposer.dispose(it) }
+            oldMarks.filter { it.first === editor }.forEach { (e, h) -> e.markupModel.removeHighlighter(h) }
             if (empty) return@perform
+            // Subrayado de la línea comentada, pintado directo en el editor: no obliga al IDE a volver a analizar el
+            // archivo (antes lo pintaba un anotador y cada cambio costaba un análisis completo de Kotlin). Tampoco
+            // es un aviso del análisis, así que no se repite al final de la línea.
+            comments.filter { it.type != CommentType.BIEN }.forEach { c -> underline(editor, doc, c)?.let { marks += editor to it } }
             stepMarkers.forEach { m ->
                 val line = m.line.coerceIn(0, (doc.lineCount - 1).coerceAtLeast(0))
                 val renderer = TutorInlayRenderer(editor, line, m.type, m.text, m.label) { m.stale }
@@ -554,11 +566,23 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         // Los de editores que ya se cerraron.
         old.filter { it.isValid }.forEach { Disposer.dispose(it) }
         if (created.isEmpty()) inlays.remove(url) else inlays[url] = created
+        if (marks.isNotEmpty()) underlines[url] = marks
     }
 
-    internal fun restartHighlighting(file: VirtualFile) {
-        ReadAction.compute<com.intellij.psi.PsiFile?, RuntimeException> { PsiManager.getInstance(project).findFile(file) }
-            ?.let { DaemonCodeAnalyzer.getInstance(project).restart(it) }
+    /** Subrayado ondulado del código de la línea (sin la sangría), con el color de aviso del tema y marca en la barra de scroll. */
+    private fun underline(editor: Editor, doc: Document, c: LiveComment): RangeHighlighter? {
+        if (!c.marker.isValid) return null
+        val line = doc.getLineNumber(c.marker.startOffset)
+        val chars = doc.charsSequence
+        var s = doc.getLineStartOffset(line)
+        var e = doc.getLineEndOffset(line)
+        while (s < e && chars[s].isWhitespace()) s++
+        while (e > s && chars[e - 1].isWhitespace()) e--
+        if (s >= e) return null
+        val key = if (c.type == CommentType.ERROR) CodeInsightColors.WARNINGS_ATTRIBUTES else CodeInsightColors.WEAK_WARNING_ATTRIBUTES
+        return editor.markupModel.addRangeHighlighter(key, s, e, HighlighterLayer.WARNING, HighlighterTargetArea.EXACT_RANGE).also { h ->
+            h.errorStripeTooltip = "Mentor · ${c.type.label}: ${c.message.replace("`", "")}"
+        }
     }
 
     // ---------- pistas ----------
@@ -605,12 +629,12 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                     .joinToString("\n").ifBlank { null }
                 val user = HintPrompts.hintUser(text, file.name, problems, previous, focus, level, fullGoal, mastered, rules())
                 val fallbackLine = focus ?: problems.firstOrNull()?.line ?: 1
-                var reply = client.complete(system, listOf(ChatMessage("user", user)), 500).await()
+                var reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500).await()
                 usage.record(UsageKind.HINT, file.name, reply.usage, system + user, reply.text, reply.limits)
                 var hint = HintParser.parse(reply.text, lineCount, level, fallbackLine)
                 if (CodeGuard.leaks(hint.text, text, level)) {
                     val retry = listOf(ChatMessage("user", user), ChatMessage("assistant", reply.text), ChatMessage("user", HintPrompts.LEAK_RETRY))
-                    reply = client.complete(system, retry, 500).await()
+                    reply = client.completeFull(system, retry, 500).await()
                     usage.record(UsageKind.HINT, file.name, reply.usage, system + user + reply.text + HintPrompts.LEAK_RETRY, reply.text, reply.limits)
                     hint = HintParser.parse(reply.text, lineCount, level, fallbackLine)
                     if (CodeGuard.leaks(hint.text, text, level)) hint = hint.copy(text = CodeGuard.redact(hint.text, text, level), redacted = true)
@@ -707,7 +731,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val system = HintPrompts.giveUpSystem(options)
                 val user = HintPrompts.giveUpUser(text, file.name, problems, hints, focus, rules())
-                val reply = client.complete(system, listOf(ChatMessage("user", user)), 1200).await()
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1200).await()
                 UsageTracker.getInstance().record(UsageKind.GIVE_UP, file.name, reply.usage, system + user, reply.text, reply.limits)
                 session.giveUp = reply.text.trim()
                 session.giveUpAt = System.currentTimeMillis()
@@ -762,7 +786,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val system = HintPrompts.explainSystem(options)
                 val user = HintPrompts.explainUser(selection, file.name, firstLine)
-                val reply = client.complete(system, listOf(ChatMessage("user", user)), 500).await()
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 500).await()
                 UsageTracker.getInstance().record(UsageKind.EXPLAIN, file.name, reply.usage, system + user, reply.text, reply.limits)
                 val questions = HintParser.questions(reply.text)
                 "Antes de explicártelo, comprueba si ya lo entiendes. Respóndeme aquí abajo:\n" +
@@ -827,7 +851,6 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
         }
         if (!changed) return
         refreshInlays(file)
-        restartHighlighting(file)
         fire()
     }
 
@@ -948,7 +971,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val analysis = Analyzer.analyze(text, challenge, lexical = false)
                 val system = Prompts.chatSystem(options, challenge, text, analysis, file.name, sessionFor(file), rules())
-                val reply = client.complete(system, messages, 500).await()
+                val reply = client.completeFull(system, messages, 500).await()
                 UsageTracker.getInstance().record(UsageKind.CHAT, file.name, reply.usage, system + messages.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()
             } catch (e: CancellationException) {
@@ -969,7 +992,6 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
     fun resolveComment(file: VirtualFile, comment: LiveComment) {
         comment.resolved = true
         refreshInlays(file)
-        restartHighlighting(file)
         fire()
     }
 
@@ -997,7 +1019,7 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 cfg = c
                 val analysis = if (text.isBlank()) null else Analyzer.analyze(text, challenge, lexical = false)
                 val system = Prompts.chatSystem(options, challenge, text, analysis, file?.name, sessionFor(file), rules())
-                val reply = client.complete(system, snapshot, 900).await()
+                val reply = client.completeFull(system, snapshot, 900).await()
                 UsageTracker.getInstance().record(UsageKind.CHAT, file?.name, reply.usage, system + snapshot.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()
             } catch (e: CancellationException) {

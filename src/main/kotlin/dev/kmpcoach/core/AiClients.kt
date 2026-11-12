@@ -67,7 +67,28 @@ data class RateLimits(
 /** Saldo de la cuenta en USD. Solo algunos proveedores lo exponen con una clave normal. */
 data class AccountBalance(val remainingUsd: Double?, val usedUsd: Double?, val limitUsd: Double?)
 
-data class AiReply(val text: String, val usage: AiUsage?, val limits: RateLimits?)
+/**
+ * [truncated]: el proveedor cortó la respuesta por llegar al máximo de tokens (Anthropic: `stop_reason` "max_tokens";
+ * OpenAI y compatibles: `finish_reason` "length"). Un JSON cortado no se puede leer.
+ */
+data class AiReply(val text: String, val usage: AiUsage?, val limits: RateLimits?, val truncated: Boolean = false)
+
+/**
+ * Como [AiClient.complete], pero si la respuesta llega cortada la pide una vez más con el doble de espacio. El consumo
+ * devuelto suma las dos llamadas, para que el costo que ves sea el real.
+ */
+fun AiClient.completeFull(system: String, messages: List<ChatMessage>, maxTokens: Int): CompletableFuture<AiReply> =
+    complete(system, messages, maxTokens).thenCompose { first ->
+        if (!first.truncated) CompletableFuture.completedFuture(first)
+        else complete(system, messages, maxTokens * 2).thenApply { second -> second.copy(usage = sum(first.usage, second.usage)) }
+    }
+
+private fun sum(a: AiUsage?, b: AiUsage?): AiUsage? = when {
+    a == null -> b
+    b == null -> a
+    else -> AiUsage(a.inputTokens + b.inputTokens, a.outputTokens + b.outputTokens,
+        if (a.costUsd != null && b.costUsd != null) a.costUsd + b.costUsd else null)
+}
 
 interface AiClient {
     /** Pide una respuesta. [system] son las instrucciones; [messages] alterna user/assistant y termina en user. */
@@ -110,7 +131,7 @@ object AiClients {
             is HttpTimeoutException -> "El proveedor tardó demasiado en responder. Prueba con un modelo más rápido o vuelve a intentarlo."
             is ConnectException -> "No se pudo conectar con ${cfg?.baseUrl ?: "el proveedor"}." +
                 if (cfg?.preset == ProviderPreset.OLLAMA) " ¿Está corriendo Ollama (`ollama serve`)?" else " Revisa tu conexión o la URL base."
-            is JsonException -> "La respuesta del modelo no tenía el formato esperado. Vuelve a intentarlo o usa un modelo más capaz."
+            is JsonException -> "La respuesta del modelo llegó incompleta o con otro formato. Vuelve a intentarlo."
             else -> e.message ?: e.javaClass.simpleName
         }
     }
@@ -195,7 +216,7 @@ private class AnthropicClient(private val cfg: AiConfig, private val http: HttpC
                 val root = Json.parse(AiClients.check(resp, cfg.preset)).asMap()
                 val text = root["content"].asList().mapNotNull { it.asMap().takeIf { b -> b["type"] == "text" }?.str("text") }.joinToString("")
                 if (text.isBlank()) throw AiException("${cfg.preset.label} devolvió una respuesta vacía.")
-                AiReply(text, AiClients.anthropicUsage(root), AiClients.rateLimits(resp.headers().map()))
+                AiReply(text, AiClients.anthropicUsage(root), AiClients.rateLimits(resp.headers().map()), root.str("stop_reason") == "max_tokens")
             }
     }
 
@@ -224,14 +245,15 @@ private class OpenAiCompatibleClient(private val cfg: AiConfig, private val http
         return http.sendAsync(req("/chat/completions").POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString())
             .thenApply { resp ->
                 val root = Json.parse(AiClients.check(resp, cfg.preset)).asMap()
-                val msg = root["choices"].asList().firstOrNull().asMap()["message"].asMap()
+                val choice = root["choices"].asList().firstOrNull().asMap()
+                val msg = choice["message"].asMap()
                 val text = when (val c = msg["content"]) {
                     is String -> c
                     is List<*> -> c.mapNotNull { it.asMap().str("text") }.joinToString("")
                     else -> ""
                 }
                 if (text.isBlank()) throw AiException("${cfg.preset.label} devolvió una respuesta vacía.")
-                AiReply(text, AiClients.openAiUsage(root), AiClients.rateLimits(resp.headers().map()))
+                AiReply(text, AiClients.openAiUsage(root), AiClients.rateLimits(resp.headers().map()), choice.str("finish_reason") == "length")
             }
     }
 

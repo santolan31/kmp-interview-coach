@@ -82,7 +82,13 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
             gaps.isNotEmpty() -> {
                 val (ev, t) = gaps.first()
                 val where = if (ev.edit.path != file.path) " (en ${ev.edit.fileName})" else ""
-                panel.text = "$head · Te falta ${t.label}$where: ${clip(t.text, 80)}" + (if (gaps.size > 1) " · y ${gaps.size - 1} más" else "")
+                val more = if (gaps.size > 1) " · y ${gaps.size - 1} más" else ""
+                panel.text = if (t.state == TodoState.PENDING) {
+                    // El comentario sigue ahí: así sabe la comprobación gratis que no lo terminaste. Se dice claro.
+                    "$head · ${t.label}$where sigue escrito: ${clip(t.text, 60)} · cuando lo completes, borra el comentario$more"
+                } else {
+                    "$head · Te falta ${t.label}$where: ${clip(t.text, 80)}$more"
+                }
                 panel.createActionLabel("Ir a lo que falta") { guide.goTo(ev) }
                 addActions(panel, guide, step, here, file)
             }
@@ -115,7 +121,7 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
         append("<html><b>").append(StringUtil.escapeXmlEntities(step.label)).append("</b><br>")
         cur.edits.flatMap { ev -> ev.status.todos.map { ev.edit.fileName to it } }.forEach { (f, t) ->
             val mark = when (t.state) {
-                TodoState.DONE -> "✓"; TodoState.PENDING, TodoState.MISSING -> "✗ falta"; TodoState.UNKNOWN -> "?"
+                TodoState.DONE -> "✓"; TodoState.PENDING -> "✗ sigue escrito"; TodoState.MISSING -> "✗ falta"; TodoState.UNKNOWN -> "?"
             }
             append("$mark ${t.label} ($f): ").append(StringUtil.escapeXmlEntities(clip(t.text, 100))).append("<br>")
         }

@@ -157,14 +157,17 @@ class TutorInlayRenderer(
         }
     }
 
-    private fun accent(): Color = when (type) {
-        CommentType.ERROR -> ERROR_COLOR
-        CommentType.MEJORA -> MEJORA_COLOR
-        CommentType.PREGUNTA -> PREGUNTA_COLOR
-        CommentType.BIEN -> BIEN_COLOR
-    }
+    private fun accent(): Color = colorOf(type)
 
     companion object {
+        /** Color de cada tipo de comentario; lo usan también la ventana de respuesta y el panel para que todo combine. */
+        fun colorOf(type: CommentType): Color = when (type) {
+            CommentType.ERROR -> ERROR_COLOR
+            CommentType.MEJORA -> MEJORA_COLOR
+            CommentType.PREGUNTA -> PREGUNTA_COLOR
+            CommentType.BIEN -> BIEN_COLOR
+        }
+
         private val PAD_X get() = JBUI.scale(8)
         private val PAD_Y get() = JBUI.scale(4)
         private val MARGIN get() = JBUI.scale(2)

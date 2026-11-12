@@ -126,6 +126,9 @@ private class RoundedBox : JPanel(BorderLayout()) {
     }
 }
 
+/** Entradas de la conversación que se dibujan sin pedir «ver anteriores». */
+private const val MAX_ENTRIES = 15
+
 /**
  * Panel lateral con tres pestañas:
  * - «Conversación»: la conversación del archivo actual (revisiones, pistas y chat, en orden de llegada), el interruptor del
@@ -172,6 +175,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     /** Último HTML de cada vista: si no cambió no se vuelve a pintar, para no perder la selección ni mover el scroll. */
     private val shown = HashMap<JEditorPane, String>()
     private var feedSignature = ""
+    /** Archivo cuya conversación se ve completa (pulsaste «ver anteriores»); los demás muestran solo lo último. */
+    private var showAllFor: String? = null
 
     init {
         val level = Level.of(settings.state.studentLevel)
@@ -571,8 +576,13 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         if (entries.isEmpty() && !working) guide(h, file)
 
         val totalHints = session?.hints?.size ?: 0
-        var hintIndex = 0
-        entries.forEach { e ->
+        // Una conversación larga cuesta redibujarla entera cada vez: se ven las últimas y las demás se piden.
+        val shown = if (file?.url == showAllFor || entries.size <= MAX_ENTRIES) entries else entries.takeLast(MAX_ENTRIES)
+        if (shown.size < entries.size) {
+            h.append("<div style='color:$muted;margin-bottom:8px'><a href='older'>Ver las ${entries.size - shown.size} entradas anteriores</a></div>")
+        }
+        var hintIndex = session?.hints?.size?.let { all -> all - shown.count { it is TutorService.Entry.HintGiven } } ?: 0
+        shown.forEach { e ->
             when (e) {
                 is TutorService.Entry.Review -> if (file != null) reviewEntry(h, file, e.review)
                 is TutorService.Entry.HintGiven -> {
@@ -1045,6 +1055,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             desc.startsWith("reply:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("reply:"))?.let { tutor.replyTo(f, it) } }
             desc.startsWith("resolve:") -> kotlin?.let { f -> tutor.findComment(f, desc.removePrefix("resolve:"))?.let { tutor.resolveComment(f, it) } }
             desc == "guideok" -> { settings.state.guideDismissed = true; scheduleRefresh() }
+            desc == "older" -> { showAllFor = file?.url; scheduleRefresh() }
             desc == "session" -> chooseSession()
             desc == "review" -> reviewNow()
             desc == "solution" -> challenge?.let { ChallengeFiles.openSolution(project, it) }

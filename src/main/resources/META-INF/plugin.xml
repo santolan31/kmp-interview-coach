@@ -29,7 +29,8 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachLocalAnnotator"/>
-        <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.CoachAiAnnotator"/>
+        <!-- Los comentarios del Mentor ya no son un anotador: se subrayan directo en el editor (TutorService.underline),
+             sin obligar al IDE a analizar de nuevo el archivo y sin repetirse al final de la línea. -->
         <externalAnnotator language="kotlin" implementationClass="dev.kmpcoach.ide.UnderstandingAnnotator"/>
         <!-- Guía de pasos: barra sobre el editor con el paso que te dio la IA en Claude Code. -->
         <editorNotificationProvider implementation="dev.kmpcoach.ide.StepGuideNotifications"/>

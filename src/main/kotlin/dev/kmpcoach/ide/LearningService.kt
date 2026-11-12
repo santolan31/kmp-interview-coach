@@ -26,6 +26,7 @@ import dev.kmpcoach.core.LearningParser
 import dev.kmpcoach.core.LearningPrompts
 import dev.kmpcoach.core.TraceQuestion
 import dev.kmpcoach.core.UsageKind
+import dev.kmpcoach.core.completeFull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +69,7 @@ class LearningService(private val project: Project, private val cs: CoroutineSco
     private suspend fun client(): AiClient = withContext(Dispatchers.IO) { CoachSettings.getInstance().createClient().first }
 
     private suspend fun call(kind: UsageKind, system: String, user: String, fileName: String?, maxTokens: Int = 500): String {
-        val reply = client().complete(system, listOf(ChatMessage("user", user)), maxTokens).await()
+        val reply = client().completeFull(system, listOf(ChatMessage("user", user)), maxTokens).await()
         UsageTracker.getInstance().record(kind, fileName, reply.usage, system + user, reply.text, reply.limits)
         return reply.text
     }

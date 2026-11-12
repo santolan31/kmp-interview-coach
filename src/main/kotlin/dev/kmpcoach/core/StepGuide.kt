@@ -413,8 +413,34 @@ Responde solo con JSON: {"cumple": true|false, "faltan": [{"archivo": "Nombre.kt
         append("¿Cumple el paso? Responde solo con el JSON.")
     }
 
+    private val CUMPLE = Regex("\"cumple\"\\s*:\\s*\"?(true|false)")
+    private val GAP = Regex("\\{[^{}]*?\"que\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"[^{}]*}")
+    private val GAP_FILE = Regex("\"archivo\"\\s*:\\s*\"([^\"]*)\"")
+    private val GAP_LINE = Regex("\"linea\"\\s*:\\s*(\\d+)")
+
+    /**
+     * Si el JSON llegó cortado (el modelo se quedó sin espacio), rescata lo que sí llegó completo: si cumple y cada
+     * cosa que falta ya cerrada con su «}». Null si ni siquiera llegó «cumple».
+     */
+    internal fun salvage(text: String): StepVerdict? {
+        val ok = CUMPLE.find(text)?.groupValues?.get(1) ?: return null
+        val gaps = GAP.findAll(text).map { m ->
+            val obj = m.value
+            StepGap(
+                GAP_FILE.find(obj)?.groupValues?.get(1)?.trim()?.ifEmpty { null },
+                GAP_LINE.find(obj)?.groupValues?.get(1)?.toIntOrNull(),
+                m.groupValues[1].replace("\\\"", "\"").replace("\\n", " ").trim(),
+            )
+        }.filter { it.text.isNotEmpty() }.take(4).toList()
+        return StepVerdict(ok == "true", gaps)
+    }
+
     fun parseVerdict(text: String): StepVerdict {
-        val m = Json.extract(text).asMap()
+        val m = try {
+            Json.extract(text).asMap()
+        } catch (e: JsonException) {
+            return salvage(text) ?: throw e
+        }
         val ok = m["cumple"] == true || m.str("cumple") == "true"
         val gaps = m["faltan"].asList().map { it.asMap() }.mapNotNull { g ->
             val what = g.str("que")?.trim().orEmpty()

@@ -61,45 +61,6 @@ class CoachLocalAnnotator : ExternalAnnotator<CoachLocalAnnotator.Input, List<Di
     }
 }
 
-/** Muestra los comentarios de la última revisión del tutor como avisos en el código (y en la vista Problemas). */
-class CoachAiAnnotator : ExternalAnnotator<List<CoachAiAnnotator.Item>, List<CoachAiAnnotator.Item>>(), DumbAware {
-
-    class Item(val range: TextRange, val type: CommentType, val message: String, val line: Int)
-
-    override fun collectInformation(file: PsiFile, editor: Editor, hasErrors: Boolean) = collect(file)
-    override fun collectInformation(file: PsiFile) = collect(file)
-
-    private fun collect(file: PsiFile): List<Item>? {
-        val vf = file.virtualFile ?: return null
-        val comments = TutorService.getInstance(file.project).commentsInEditor(vf)
-        if (comments.isEmpty()) return null
-        val doc = file.viewProvider.document ?: return null
-        val chars = doc.charsSequence
-        return comments.filter { it.marker.isValid && it.type != CommentType.BIEN }.map { c ->
-            val line = doc.getLineNumber(c.marker.startOffset)
-            var s = doc.getLineStartOffset(line)
-            var e = doc.getLineEndOffset(line)
-            while (s < e && chars[s].isWhitespace()) s++
-            while (e > s && chars[e - 1].isWhitespace()) e--
-            Item(TextRange(s, maxOf(e, s)), c.type, c.message, line)
-        }
-    }
-
-    override fun doAnnotate(collectedInfo: List<Item>?) = collectedInfo
-
-    override fun apply(file: PsiFile, annotationResult: List<Item>?, holder: AnnotationHolder) {
-        val length = file.textLength
-        for (it in annotationResult.orEmpty()) {
-            if (it.range.endOffset > length) continue
-            val severity = if (it.type == CommentType.ERROR) HighlightSeverity.WARNING else HighlightSeverity.WEAK_WARNING
-            val b = holder.newAnnotation(severity, "Tutor IA · ${it.type.label}: ${plain(it.message)}")
-                .tooltip(html("Tutor IA · ${it.type.label}:", it.message))
-                .withFix(AskTutorFix("Sobre tu comentario en la línea ${it.line + 1} («${plain(it.message)}»): "))
-            (if (it.range.isEmpty) b.afterEndOfLine().range(TextRange(it.range.startOffset, it.range.startOffset)) else b.range(it.range)).create()
-        }
-    }
-}
-
 /**
  * Alt+Enter → «Mentor: preguntarle por qué». Si [question] termina en «: » solo la escribe en el chat;
  * si no, la envía directamente.

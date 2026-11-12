@@ -29,6 +29,9 @@ import dev.kmpcoach.core.StepParser
 import dev.kmpcoach.core.StepPrompts
 import dev.kmpcoach.core.StepVerdict
 import dev.kmpcoach.core.UsageKind
+import dev.kmpcoach.core.TodoState
+import dev.kmpcoach.core.completeFull
+import com.intellij.openapi.fileEditor.FileEditor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -92,7 +95,8 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
 
     fun start() {
         project.messageBus.connect(this).subscribe(DaemonCodeAnalyzer.DAEMON_EVENT_TOPIC, object : DaemonCodeAnalyzer.DaemonListener {
-            override fun daemonFinished() = refresh()
+            // Solo los archivos que se acaban de analizar: antes se recalculaba la barra de todos los archivos abiertos.
+            override fun daemonFinished(fileEditors: Collection<FileEditor>) = refresh(fileEditors.mapNotNull { it.file })
         })
         TutorService.getInstance(project).addListener(this, object : TutorService.Listener {
             override fun changed() = refresh()
@@ -103,13 +107,27 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         }
     }
 
-    /** Vuelve a dibujar las barras, agrupando los avisos seguidos en uno. */
-    fun refresh() {
+    /** Archivos cuya barra hay que recalcular en el próximo refresco; null = todos (cambió el paso, la sesión o el tutor). */
+    private var pendingFiles: MutableSet<VirtualFile>? = HashSet()
+    private val pendingLock = Any()
+
+    /**
+     * Vuelve a dibujar las barras, agrupando los avisos seguidos en uno. [files]: solo esos archivos (lo que acaba de
+     * analizar el IDE); sin argumento, todos.
+     */
+    fun refresh(files: Collection<VirtualFile>? = null) {
+        synchronized(pendingLock) {
+            val p = pendingFiles
+            if (files == null) pendingFiles = null else p?.addAll(files)
+        }
         refreshJob?.cancel()
         refreshJob = cs.launch {
             delay(400)
             if (project.isDisposed) return@launch
-            EditorNotifications.getInstance(project).updateAllNotifications()
+            val targets = synchronized(pendingLock) { pendingFiles.also { pendingFiles = HashSet() } }
+            val notifications = EditorNotifications.getInstance(project)
+            if (targets == null) notifications.updateAllNotifications()
+            else targets.filter { TutorService.isKotlin(it) }.forEach { notifications.updateNotifications(it) }
             withContext(Dispatchers.EDT) { refreshMarkers() }
         }
     }
@@ -130,8 +148,7 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         // Archivos cerrados: su cobertura ya no hace falta.
         covered.keys.retainAll(fem.openFiles.map { it.path }.toSet())
         (now + markedFiles + coverageChanged).forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::refreshInlays) }
-        // Los comentarios que ahora cubre el paso (o que dejó de cubrir) también cambian su subrayado y el panel.
-        coverageChanged.forEach { p -> vfOf(p)?.takeIf { fem.isFileOpen(it) }?.let(tutor::restartHighlighting) }
+        // Los comentarios que ahora cubre el paso (o que dejó de cubrir) cambian en el panel.
         if (coverageChanged.isNotEmpty()) tutor.notifyChanged()
         markedFiles.clear()
         markedFiles += now
@@ -165,13 +182,21 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         val sv = stepView(steps, idx, lines)
         val here = sv.edits.filter { it.edit.path == file.path }
         val out = ArrayList<Marker>()
-        here.forEach { ev ->
+        val stored = verdicts[step.id]
+        val stale = stored != null && stored.first != fingerprint(step, lines)
+        // Si el Mentor vio tu código actual y dice que cumple, su respuesta manda: la comprobación gratis no lo contradice.
+        val aiApproves = stored != null && !stale && stored.second.ok
+        if (!aiApproves) here.forEach { ev ->
             ev.status.todos.filter { it.missing && it.line != null }.forEach { t ->
-                out += Marker(t.line!!, CommentType.ERROR, "Falta · ${t.label}", t.text, stale = false)
+                out += if (t.state == TodoState.PENDING) {
+                    // El comentario TODO sigue escrito: puede que ya lo hiciste y solo falta borrarlo.
+                    Marker(t.line!!, CommentType.ERROR, "${t.label} sigue escrito", "${t.text} · Cuando lo completes, borra el comentario TODO.", stale = false)
+                } else {
+                    Marker(t.line!!, CommentType.ERROR, "Falta · ${t.label}", t.text, stale = false)
+                }
             }
         }
-        val stored = verdicts[step.id] ?: return out
-        val stale = stored.first != fingerprint(step, lines)
+        if (stored == null) return out
         val v = stored.second
         val fallback = here.firstNotNullOfOrNull { it.status.cursorLine } ?: (here.first().edit.line - 1).coerceAtLeast(0)
         if (v.ok) {
@@ -353,7 +378,8 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
                 val rules = withContext(Dispatchers.IO) { runCatching { ProjectRulesReader.getInstance(project).read() }.getOrNull() }
                 val system = StepPrompts.verifySystem(options)
                 val user = StepPrompts.verifyUser(step, files, rules)
-                val reply = client.complete(system, listOf(ChatMessage("user", user)), 300).await()
+                // Con espacio de sobra: si el JSON llega cortado no se puede leer (así fallaba con 300 y modelos que escriben más).
+                val reply = client.completeFull(system, listOf(ChatMessage("user", user)), 1000).await()
                 UsageTracker.getInstance().record(UsageKind.STEP, step.edits.firstOrNull()?.fileName, reply.usage, system + user, reply.text, reply.limits)
                 verdicts[step.id] = print to StepPrompts.parseVerdict(reply.text)
             } catch (e: CancellationException) {

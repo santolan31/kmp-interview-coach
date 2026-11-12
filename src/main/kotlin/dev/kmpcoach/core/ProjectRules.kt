@@ -76,12 +76,24 @@ object StaleComments {
         val tokens = IDENT.findAll(message).map { it.value }.filter { it.length >= 4 }.toSet()
         // Solo cuentan los nombres que estaban en el código: así las palabras normales del mensaje no influyen.
         val named = tokens.filter { t -> word(t).containsMatchIn(code) && codeLike(t, t in quoted, code) }
-        return named.any { t -> !word(t).containsMatchIn(now) }
+        if (named.any { t -> !word(t).containsMatchIn(now) }) return true
+        // Fragmentos de código sin nombre que el mensaje cita tal cual («recibe {}»): si ya no están, habla de otro código.
+        val atoms = ATOM.findAll(code).map { it.value.trimEnd(',', ';') }
+            .filter { a -> a.length >= 2 && a !in STOP && a.any { !it.isLetterOrDigit() && it != '_' } }
+            .toSet()
+        // Se cuenta cuántas veces aparece: la línea de al lado puede tener el mismo `{}` y no por eso sigue igual.
+        return atoms.any { a -> a in message && count(now, a) < count(code, a) }
     }
+
+    private fun count(text: String, part: String): Int = text.windowed(part.length).count { it == part }
+
+    private val ATOM = Regex("[^\\s]+")
+    private val STOP = setOf("()", "})", "){", "->", "==", "!=", "&&", "||", "?:", "?.", "::", "//", "/*", "*/")
+    private val LITERALS = setOf("null", "true", "false")
 
     /** `isEnable` o `text_placeholder` son código; `color` solo si va entre backticks o se usa como código (`.primary`, `color =`). */
     private fun codeLike(t: String, quoted: Boolean, code: String): Boolean {
-        if (quoted || t.drop(1).any { it.isUpperCase() } || '_' in t || t.any { it.isDigit() }) return true
+        if (quoted || t in LITERALS || t.drop(1).any { it.isUpperCase() } || '_' in t || t.any { it.isDigit() }) return true
         val e = Regex.escape(t)
         return Regex("\\.$e(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])$e\\s*[(=]").containsMatchIn(code)
     }
