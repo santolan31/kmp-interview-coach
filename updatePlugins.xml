@@ -3,8 +3,8 @@
      Lo regenera scripts/release.sh: no lo edites a mano. -->
 <plugins>
     <plugin id="dev.kmpcoach.interview-coach"
-            url="https://github.com/santolan31/kmp-interview-coach/releases/download/v0.6.2/kmp-interview-coach-0.6.2.zip"
-            version="0.6.2">
+            url="https://github.com/santolan31/kmp-interview-coach/releases/download/v0.7.0/kmp-interview-coach-0.7.0.zip"
+            version="0.7.0">
         <idea-version since-build="243"/>
         <name>KMP Interview Coach</name>
         <vendor>KMP Interview Coach</vendor>
