@@ -17,6 +17,7 @@ enum class Brand(val id: String, val color: String, val glyph: String) {
     OPENROUTER("openrouter", "#6566F1", "⇄"),
     OLLAMA("ollama", "#8B949E", "◍"),
     CURSOR("cursor", "#8B949E", "➤"),
+    COPILOT("copilot", "#8B949E", "◐"),
     CUSTOM("custom", "#8B949E", "⚙");
 
     companion object {
@@ -32,7 +33,7 @@ enum class Brand(val id: String, val color: String, val glyph: String) {
             ProviderPreset.CUSTOM -> CUSTOM
         }
 
-        /** El ícono de la fuente del plan: una conversación de Claude Code o un plan de Antigravity. */
-        fun ofPlanFile(path: String): Brand = if ("/.gemini/" in path.replace('\\', '/')) ANTIGRAVITY else CLAUDE
+        /** El ícono de la fuente del plan: Claude Code, Antigravity, GitHub Copilot o un plan pegado. */
+        fun ofPlanFile(path: String): Brand = SourceKind.ofPath(path).brand
     }
 }

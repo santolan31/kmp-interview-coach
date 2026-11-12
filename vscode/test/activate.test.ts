@@ -51,7 +51,8 @@ test("activa y registra el panel y todos los comandos del package.json", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const ext = require(path.resolve(__dirname, "../../dist/extension.js"));
   const subscriptions: unknown[] = [];
-  ext.activate({ subscriptions, extensionPath: path.resolve(__dirname, "../.."), secrets: { get: async () => undefined, store: async () => {} }, globalState: { get: (_k: string, d: unknown) => d, update: async () => {} } });
+  ext.activate({ subscriptions, extensionPath: path.resolve(__dirname, "../.."), storageUri: undefined,
+    workspaceState: { get: () => undefined, update: async () => {} }, secrets: { get: async () => undefined, store: async () => {} }, globalState: { get: (_k: string, d: unknown) => d, update: async () => {} } });
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pkg = require(path.resolve(__dirname, "../../package.json"));
   const declared = pkg.contributes.commands.map((c: { command: string }) => c.command).sort();

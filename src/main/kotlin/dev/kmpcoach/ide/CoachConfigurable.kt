@@ -272,13 +272,17 @@ class CoachConfigurable : BoundConfigurable("Mentor") {
     }
 
     override fun apply() {
+        val before = listOf(settings.state.preset, settings.state.model, settings.state.baseUrl)
         super.apply()
         settings.state.pricedModel = settings.modelKey()
         editedKeys[shown] = String(keyField.password)
         val toSave = editedKeys.filter { (p, k) -> keyModified(p, k) }.mapValues { it.value.trim() }
         toSave.forEach { (p, k) -> loadedKeys[p] = k }
-        if (toSave.isNotEmpty()) ApplicationManager.getApplication().executeOnPooledThread {
+        // Cambiaste proveedor, modelo, ruta o clave: se prueba la conexión y se avisa si quedó conectado.
+        val changed = toSave.isNotEmpty() || before != listOf(settings.state.preset, settings.state.model, settings.state.baseUrl)
+        ApplicationManager.getApplication().executeOnPooledThread {
             toSave.forEach { (p, k) -> CoachSecrets.set(p, k) }
+            if (changed) ConnectionStatus.getInstance().test(null)
         }
         editedKeys.clear()
     }

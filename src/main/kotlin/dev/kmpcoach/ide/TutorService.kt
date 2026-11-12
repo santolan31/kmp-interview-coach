@@ -1024,7 +1024,10 @@ class TutorService(private val project: Project, private val cs: CoroutineScope)
                 val (client, c) = withContext(Dispatchers.IO) { settings.createClient() }
                 cfg = c
                 val analysis = if (text.isBlank()) null else Analyzer.analyze(text, challenge, lexical = false)
-                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.let { relativePath(it) }, sessionFor(file), rules())
+                val session = sessionFor(file)
+                // Encendido y sin plan: el Mentor dice qué buscó y qué botón usar, en vez de pedir «contexto» en general.
+                val noPlan = file != null && isTutorOn(file) && settings.state.readAiSession && session == null
+                val system = Prompts.chatSystem(options, challenge, text, analysis, file?.let { relativePath(it) }, session, rules(), noPlan)
                 val reply = client.completeFull(system, snapshot, 900)
                 UsageTracker.getInstance().record(UsageKind.CHAT, file?.name, reply.usage, system + snapshot.joinToString { it.content }, reply.text, reply.limits)
                 reply.text.trim()

@@ -50,6 +50,11 @@ class JvmHttpTransport(private val http: HttpClient) : HttpTransport {
 
 actual fun todayIso(): String = LocalDate.now().toString()
 
+actual fun nfc(text: String): String = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFC)
+
+actual fun nfcAndNfd(text: String): List<String> =
+    listOf(nfc(text), java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)).distinct()
+
 /**
  * Corre una función `suspend` del core y devuelve un `CompletableFuture`, para el código de Swing que no vive en
  * una corrutina (por ejemplo, los botones de Ajustes). Solo usa la biblioteca estándar.

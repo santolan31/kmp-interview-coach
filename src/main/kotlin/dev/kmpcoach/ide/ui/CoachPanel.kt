@@ -49,6 +49,7 @@ import com.intellij.icons.AllIcons
 import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.Brand
 import dev.kmpcoach.ide.BrandIcons
+import dev.kmpcoach.ide.ConnectionStatus
 import dev.kmpcoach.core.futureOf
 import dev.kmpcoach.core.Analysis
 import dev.kmpcoach.core.Analyzer
@@ -133,6 +134,9 @@ private class RoundedBox : JPanel(BorderLayout()) {
 /** Entradas de la conversación que se dibujan sin pedir «ver anteriores». */
 private const val MAX_ENTRIES = 15
 
+/** Elemento «Pegar un plan…» del selector de conversación (no es un archivo). */
+private val PASTE_ACTION = java.io.File("mentor:pegar-plan")
+
 /**
  * Panel lateral con tres pestañas:
  * - «Conversación»: la conversación del archivo actual (revisiones, pistas y chat, en orden de llegada), el interruptor del
@@ -159,6 +163,9 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val giveUpLink = ActionLink("Me rindo") { currentKotlin()?.let(::giveUpDialog) }
     private val sendButton = JButton("Enviar")
     private val modelLink = ActionLink("") { chooseModel() }
+    /** Si el Mentor está conectado con la IA elegida, siempre a la vista junto al modelo. */
+    private val connLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+    private val connLink = ActionLink("Probar") { ConnectionStatus.getInstance().test(project) }
     @Volatile private var loadingModels = false
 
     // Pestaña «Progreso»
@@ -213,6 +220,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         LearnerProfile.getInstance().addListener(this) { scheduleRefresh() }
         AiSessionContext.getInstance(project).addListener(this) { ApplicationManager.getApplication().invokeLater { scheduleRefresh() } }
         if (settings.preset == ProviderPreset.OPENROUTER) tutor.refreshBalance()
+        ConnectionStatus.getInstance().addListener(this) { syncConnection() }
+        syncConnection()
         val bus = project.messageBus.connect(this)
         bus.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
             override fun selectionChanged(event: FileEditorManagerEvent) = scheduleRefresh()
@@ -227,6 +236,25 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             }
         }, this)
         refresh()
+    }
+
+    /** Punto verde, rojo o gris y el estado de la conexión, junto al modelo. */
+    private fun syncConnection() {
+        val c = ConnectionStatus.getInstance()
+        val (color, text) = when (c.state) {
+            ConnectionStatus.State.OK -> ok to c.message
+            ConnectionStatus.State.ERROR -> bad to "Sin conexión: " + c.message
+            ConnectionStatus.State.TESTING -> muted to "Probando la conexión…"
+            ConnectionStatus.State.UNTESTED -> muted to "Conexión sin probar"
+        }
+        connLabel.text = "<html><span style='color:$color'>●</span> ${esc(text.take(90))}</html>"
+        connLabel.toolTipText = text
+        connLink.text = when (c.state) {
+            ConnectionStatus.State.ERROR -> "Probar de nuevo"
+            ConnectionStatus.State.TESTING -> ""
+            else -> "Probar"
+        }
+        connLink.isVisible = c.state != ConnectionStatus.State.TESTING
     }
 
     // ---------- construcción ----------
@@ -310,6 +338,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             isOpaque = false
             border = JBUI.Borders.emptyTop(4)
             add(modelLink)
+            add(connLabel)
+            add(connLink)
         }
         val composer = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(6, 10, 8, 10)
@@ -651,31 +681,44 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             step?.let { "Paso ${esc(it.number)}" },
             rules?.let { "reglas: ${esc(it.source)}" } ?: "sin AGENTS.md",
         ).joinToString(" · ")
-        val text = if (found == null) {
-            "Contexto: no encontré una conversación reciente de Claude Code ni un plan de Antigravity que hable de este archivo · $extra. <a href='session'>elegir</a>"
-        } else {
-            // El símbolo de color de la IA de donde sale el plan (Claude Code o Antigravity): el HTML de Swing no dibuja SVG.
-            val b = Brand.ofPlanFile(found.file.path)
-            "Contexto: <span style='color:${b.color}'>${b.glyph}</span> «${esc(found.lastRequest ?: "conversación sin pedidos")}» · $extra · " +
-                (if (found.automatic) "elegida sola" else "elegida por ti") + " · <a href='session'>cambiar</a>"
+        if (found == null) {
+            // Sin plan: se dice dónde se buscó y qué hacer, en vez de dejar que el Mentor pida «contexto» en general.
+            val s = AiSessionContext.getInstance(project).lastSearch
+            h.append("<div style='color:$muted;margin-bottom:6px'>Contexto: $extra</div>")
+            h.append(entry(card(warn,
+                "<b>No encontré tu conversación con otra IA en este proyecto.</b><br>" +
+                    "<span style='color:$muted'>Busqué conversaciones de los últimos 3 días en: Claude Code (${s.claude}) · GitHub Copilot (${s.copilot}) · " +
+                    "Antigravity (${s.antigravity}). Ninguna habla de este archivo o no hay ninguna.</span><br>" +
+                    "<a href='session'>Elegir conversación</a> (si fue con Claude Code, Copilot o Antigravity) · " +
+                    "<a href='paste'>Pegar el plan</a> (de cualquier otra IA: cópialo y pulsa aquí)")))
+            return
         }
+        // El símbolo de color de la IA de donde sale el plan: el HTML de Swing no dibuja SVG.
+        val b = Brand.ofPlanFile(found.file.path)
+        val pasted = found.file == AiSessionContext.PASTED
+        val text = "Contexto: <span style='color:${b.color}'>${b.glyph}</span> <b>${esc(found.source)}</b>: " +
+            "«${esc(found.lastRequest ?: "conversación sin pedidos")}» · $extra · " +
+            (if (found.automatic) "elegida sola" else "elegida por ti") + " · <a href='session'>cambiar</a>" +
+            (if (pasted) " · <a href='unpaste'>quitar</a>" else "")
         h.append("<div style='color:$muted;margin-bottom:10px'>$text</div>")
     }
 
     private fun chooseSession() {
         val ctx = AiSessionContext.getInstance(project)
         ApplicationManager.getApplication().executeOnPooledThread {
-            // Conversaciones de Claude Code y planes de Antigravity, cada uno con el ícono de su IA.
-            val items = listOf(SourceItem("Automática: el plan más reciente que habla de este archivo", null, AllIcons.Actions.Lightning)) +
-                ctx.candidates().map { SourceItem(ctx.label(it), it, BrandIcons.ofPlanFile(it)) } +
-                ctx.antigravityPlans().map { SourceItem(ctx.label(it.file), it.file, BrandIcons.ofPlanFile(it.file)) }
+            // Conversaciones de Claude Code, Copilot y Antigravity, planes de Antigravity y el plan pegado, cada uno con su ícono.
+            val items = listOf(SourceItem("Automática: la conversación o el plan más reciente que habla de este archivo", null, AllIcons.Actions.Lightning)) +
+                listOfNotNull(ctx.pastedPlan()?.let { SourceItem(ctx.label(AiSessionContext.PASTED), AiSessionContext.PASTED, BrandIcons.ofPlanFile(AiSessionContext.PASTED)) }) +
+                ctx.candidates().map { SourceItem("${ctx.label(it)} · ${dev.kmpcoach.core.SourceKind.ofPath(it.path).label}", it, BrandIcons.ofPlanFile(it)) } +
+                ctx.antigravityPlans().map { SourceItem(ctx.label(it.file), it.file, BrandIcons.ofPlanFile(it.file)) } +
+                SourceItem("Pegar un plan… (de cualquier otra IA: lo toma del portapapeles)", PASTE_ACTION, AllIcons.Actions.MenuPaste)
             ApplicationManager.getApplication().invokeLater {
                 if (project.isDisposed) return@invokeLater
                 JBPopupFactory.getInstance().createPopupChooserBuilder(items)
                     .setTitle("De dónde lee el Mentor tu plan")
                     .setRenderer(BrandIcons.renderer<SourceItem>({ it.label }, { it.icon }))
                     .setNamerForFiltering { it.label }
-                    .setItemChosenCallback { ctx.choose(it.file) }
+                    .setItemChosenCallback { if (it.file == PASTE_ACTION) pastePlan() else ctx.choose(it.file) }
                     .createPopup()
                     .showCenteredInCurrentWindow(project)
             }
@@ -683,6 +726,26 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     }
 
     private class SourceItem(val label: String, val file: java.io.File?, val icon: javax.swing.Icon)
+
+    /**
+     * «Pegar el plan»: para cualquier IA cuya conversación no se puede leer (Gemini o ChatGPT en el navegador, Cursor…).
+     * Copias el plan, pulsas el enlace y el Mentor lo toma del portapapeles. Se guarda para este proyecto.
+     */
+    private fun pastePlan() {
+        val text = runCatching {
+            com.intellij.openapi.ide.CopyPasteManager.getInstance().getContents<String>(java.awt.datatransfer.DataFlavor.stringFlavor)
+        }.getOrNull()?.trim().orEmpty()
+        if (text.isEmpty()) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(project, "El portapapeles está vacío. Copia el plan que te dio tu IA y vuelve a pulsar «Pegar el plan».", "Pegar el plan")
+            return
+        }
+        val steps = dev.kmpcoach.core.StepParser.parse(dev.kmpcoach.core.AntigravityPlans.toSteps(text), project.basePath).size
+        val what = if (steps > 0) "$steps pasos" else "sin pasos «## Paso N» (solo se usará como contexto)"
+        val ok = com.intellij.openapi.ui.Messages.showYesNoDialog(project,
+            "¿Usar como plan el texto del portapapeles?\n${text.length} caracteres, $what.\n\nEmpieza: «${text.take(120).replace(Regex("\\s+"), " ")}…»",
+            "Pegar el plan", "Usar este plan", "Cancelar", null)
+        if (ok == com.intellij.openapi.ui.Messages.YES) AiSessionContext.getInstance(project).setPastedPlan(text)
+    }
 
     /** Conversación vacía: cómo se usa, en tres gestos. Se puede cerrar. */
     private fun guide(h: StringBuilder, file: VirtualFile?) {
@@ -1076,6 +1139,8 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             desc == "guideok" -> { settings.state.guideDismissed = true; scheduleRefresh() }
             desc == "older" -> { showAllFor = file?.url; scheduleRefresh() }
             desc == "session" -> chooseSession()
+            desc == "paste" -> pastePlan()
+            desc == "unpaste" -> AiSessionContext.getInstance(project).setPastedPlan(null)
             desc == "review" -> reviewNow()
             desc == "solution" -> challenge?.let { ChallengeFiles.openSolution(project, it) }
             desc == "restart" -> if (file != null && challenge != null) restart(file, challenge)

@@ -63,8 +63,9 @@ export const core = {
   listModels: async (c: AiConfig): Promise<{ ok: true; models: string[] } | { ok: false; error: string }> =>
     JSON.parse(await api.listModels(json(c))),
 
-  chatSystem: (o: PromptOptions, path: string | null, code: string, session: string | null, r: Rules | null) =>
-    api.chatSystem(json(o), path, code, session, rules(r)),
+  /** [noPlan]: el Mentor está encendido y no encontró el plan: dirá qué buscó y qué botón usar. */
+  chatSystem: (o: PromptOptions, path: string | null, code: string, session: string | null, r: Rules | null, noPlan = false) =>
+    api.chatSystem(json(o), path, code, session, rules(r), noPlan),
 
   projectDirName: (basePath: string) => api.projectDirName(basePath),
   parseSession: (lines: string[]): string => api.parseSession(lines),

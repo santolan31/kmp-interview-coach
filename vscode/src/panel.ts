@@ -53,6 +53,13 @@ export class Panel implements vscode.WebviewViewProvider {
       case "provider": return vscode.commands.executeCommand("mentor.chooseProvider");
       case "model": return vscode.commands.executeCommand("mentor.chooseModel");
       case "session": return this.mentor.chooseSession(doc);
+      case "paste": return this.mentor.pastePlan(doc);
+      case "copyResume": return this.mentor.copyResume(doc);
+      case "useOld": return this.mentor.useOld(doc);
+      case "clearPaste": return this.mentor.clearPastedPlan(doc);
+      case "test": return this.mentor.testConnection();
+      case "setKey": return vscode.commands.executeCommand("mentor.setApiKey");
+      case "login": return vscode.commands.executeCommand("mentor.loginCli");
       case "clear": return this.mentor.clearChat(doc);
       case "resetUsage": return this.mentor.resetUsage();
       case "tab": this.tab = m.tab === "usage" ? "usage" : "chat"; return this.render();
@@ -71,8 +78,24 @@ export class Panel implements vscode.WebviewViewProvider {
       body: this.tab === "chat" ? this.chatHtml(doc) : this.usageHtml(),
       busy: this.mentor.isBusy(doc),
       model: brandSvg(brandOfProvider(this.mentor.config.providerId)) + esc(this.mentor.config.label()) + " ▾",
+      conn: this.connectionHtml(),
       actions: this.actions(doc),
     });
+  }
+
+  /** Si el Mentor está conectado, siempre a la vista: punto verde, rojo (con el botón que lo arregla) o gris. */
+  private connectionHtml(): string {
+    const c = this.mentor.connection;
+    const ago = c.at ? ` · ${agoText(c.at)}` : "";
+    switch (c.state) {
+      case "ok": return `<span class="dot ok"></span>${esc(c.message)}${ago} · <a data-action="test">probar de nuevo</a>`;
+      case "testing": return `<span class="dot"></span>Probando la conexión…`;
+      case "error": {
+        const fix = c.action === "key" ? `<a data-action="setKey">Poner la clave</a>` : c.action === "login" ? `<a data-action="login">Iniciar sesión en la terminal</a>` : `<a data-action="provider">Elegir proveedor</a>`;
+        return `<span class="dot bad"></span><span class="error">Sin conexión:</span> ${esc(c.message)} · ${fix} · <a data-action="test">probar</a>`;
+      }
+      default: return `<span class="dot"></span>Conexión sin probar · <a data-action="test">Probar conexión</a>`;
+    }
   }
 
   /** Lo que puedes pedirle sobre el archivo. Sin archivo, nada (nunca un botón que no hace nada). */
@@ -158,8 +181,27 @@ export class Panel implements vscode.WebviewViewProvider {
     const step = this.guide.summary(doc);
     if (step) parts.push(esc(step));
     if (!this.mentor.config.readAiSession) parts.push("sin leer conversaciones (Ajustes)");
-    else if (found) parts.push(`${brandSvg(brandOfPlanFile(found.file))}plan: «${esc(found.lastRequest ?? "conversación")}» · ${found.automatic ? "elegida sola" : "elegida por ti"} · <a data-action="session">cambiar</a>`);
-    else parts.push(`no encontré una conversación de Claude Code ni un plan de Antigravity que hable de este archivo · <a data-action="session">elegir</a>`);
+    else if (found) {
+      const pasted = found.source === "Plan pegado";
+      parts.push(`${brandSvg(brandOfPlanFile(found.file))}<b>${esc(found.source)}</b>: «${esc(found.lastRequest ?? "conversación")}»` +
+        (found.oldAgo ? ` · <span class="warn">de ${esc(found.oldAgo)}</span>` : "") + ` · ` +
+        `${found.automatic ? "elegida sola" : "elegida por ti"} · <a data-action="session">cambiar</a>` + (pasted ? ` · <a data-action="clearPaste">quitar</a>` : ""));
+    } else {
+      const head = `<div class="context">Contexto: ${parts.join(" · ")}</div>`;
+      const old = this.mentor.oldFor(doc);
+      if (old) {
+        // Retomas el proyecto: lo normal es un chat nuevo con tu IA. Se ayuda a empezarlo con el plan anterior.
+        return head + `<div class="card warncard"><b>Estás retomando este proyecto.</b> Su última conversación es de <b>${esc(old.ago)}</b> ` +
+          `(${brandSvg(old.brand)}${esc(old.source)}${old.title ? ` · «${esc(old.title)}»` : ""}).<br>` +
+          `<span class="muted">Abre un <b>chat nuevo</b> con tu IA y pídele el siguiente plan: el Mentor lo leerá solo en cuanto exista. ` +
+          `Para que no empiece de cero, copia el resumen: el plan anterior, qué pasos ya están hechos según tu código y el pedido de los siguientes.</span><br>` +
+          `<a data-action="copyResume">Copiar resumen para tu IA</a> · <a data-action="useOld">Usar la conversación vieja igual</a> · <a data-action="paste">Pegar un plan</a></div>`;
+      }
+      // Ninguna conversación del proyecto en ninguna IA: se dice tal cual y qué hacer.
+      return head + `<div class="card warncard"><b>Este proyecto no tiene conversaciones con Claude Code, GitHub Copilot ni Antigravity.</b><br>` +
+        `<span class="muted">Pídele a tu IA un plan con pasos para este proyecto: el Mentor lo leerá solo. Si usas otra IA (Gemini o ChatGPT en el navegador…), ` +
+        `copia su plan y pégalo aquí.</span><br><a data-action="paste">Pegar el plan</a> · <a data-action="session">Elegir conversación</a></div>`;
+    }
     return `<div class="context">Contexto: ${parts.join(" · ")}</div>`;
   }
 
@@ -174,7 +216,7 @@ export class Panel implements vscode.WebviewViewProvider {
     if (provider.billingUrl) h += ` <a href="${esc(provider.billingUrl)}">Ver mi cuenta</a>`;
     h += `</div>`;
     if (kinds.length === 0) return h + `<div class="muted">Todavía no hay llamadas.</div>`;
-    const label: Record<string, string> = { chat: "Chat", review: "Revisión", hint: "Pistas", giveup: "Me rindo", step: "Comprobar paso" };
+    const label: Record<string, string> = { chat: "Chat", review: "Revisión", hint: "Pistas", giveup: "Me rindo", step: "Comprobar paso", test: "Prueba de conexión" };
     h += `<table><tr><th></th><th>Llamadas</th><th>Entrada</th><th>Salida</th><th>Costo</th></tr>`;
     let calls = 0, input = 0, output = 0, cost = 0;
     for (const [k, t] of kinds) {
@@ -198,6 +240,11 @@ function entry(e: Entry): string {
   if (e.role === "user") return `<div class="entry"><div class="bubble">${md(e.text)}</div></div>`;
   if (e.role === "error") return `<div class="entry error">${esc(e.text)} <a data-action="provider">Revisar proveedor</a></div>`;
   return `<div class="entry"><div class="head">Mentor</div>${md(e.text)}</div>`;
+}
+
+function agoText(at: number): string {
+  const m = Math.round((Date.now() - at) / 60_000);
+  return m < 1 ? "ahora" : m < 60 ? `hace ${m} min` : `hace ${Math.round(m / 60)} h`;
 }
 
 export function esc(s: string): string {
@@ -254,6 +301,10 @@ function shell(n: string): string {
   .comment.pregunta { border-color: #8DB8F2; } .comment.bien { border-color: #5DBE8A; }
   .actions { margin-bottom: 6px; }
   svg.brand { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+  .conn { margin-top: 6px; font-size: 0.92em; color: var(--vscode-descriptionForeground); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--vscode-descriptionForeground); vertical-align: 0; }
+  .dot.ok { background: #5DBE8A; } .dot.bad { background: #EC7C69; }
+  .warncard { border-left-color: var(--vscode-editorWarning-foreground); }
   code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); padding: 0 3px; border-radius: 3px; }
   pre { background: var(--vscode-textCodeBlock-background); padding: 8px; border-radius: 6px; overflow-x: auto; }
   pre code { background: none; padding: 0; }
@@ -274,7 +325,8 @@ function shell(n: string): string {
 <footer>
   <div class="actions" id="actions"></div>
   <textarea id="input" placeholder="Pregúntale al Mentor… (Enter envía · Mayús+Enter salta de línea)"></textarea>
-  <div class="bar"><a data-action="model" id="model" title="Elegir modelo"></a><button class="send" id="send">Enviar</button></div>
+  <div class="bar"><a data-action="model" id="model" title="Elegir modelo, proveedor o clave"></a><button class="send" id="send">Enviar</button></div>
+  <div class="conn" id="conn"></div>
 </footer>
 <script nonce="${n}">
   const vscode = acquireVsCodeApi();
@@ -293,6 +345,7 @@ function shell(n: string): string {
     document.getElementById("header").innerHTML = m.header;
     document.querySelectorAll("[data-tab]").forEach((t) => t.classList.toggle("sel", t.dataset.tab === m.tab));
     document.getElementById("model").innerHTML = m.model;
+    document.getElementById("conn").innerHTML = m.conn;
     document.getElementById("actions").innerHTML = m.actions;
     send.disabled = m.busy;
     if (m.body !== lastBody) {

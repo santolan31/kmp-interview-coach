@@ -76,9 +76,9 @@ object MentorApi {
         ))
     }
 
-    /** Instrucciones del chat (con el archivo abierto, si lo hay). */
-    fun chatSystem(options: String, path: String?, code: String, session: String?, rules: String?): String =
-        Prompts.chatSystem(opts(options, path), null, code, null, path, session, rulesOf(rules))
+    /** Instrucciones del chat (con el archivo abierto, si lo hay). [noPlan]: el Mentor está encendido y no encontró el plan. */
+    fun chatSystem(options: String, path: String?, code: String, session: String?, rules: String?, noPlan: Boolean): String =
+        Prompts.chatSystem(opts(options, path), null, code, null, path, session, rulesOf(rules), noPlan)
 
     /** Primer mensaje al responder un comentario: lo cita para que el Mentor sepa a cuál respondes. */
     fun replyToComment(line: Int, type: String, comment: String, answer: String): String =
@@ -134,6 +134,35 @@ object MentorApi {
     // ---------- contexto: conversación con otra IA y reglas del proyecto ----------
 
     fun projectDirName(basePath: String): String = ClaudeSessions.projectDirName(basePath)
+
+    /** Conversación de Antigravity (líneas de su transcript.jsonl) como JSON [{role, text, at}]. */
+    fun parseAntigravity(lines: Array<String>): String = turnsJson(AntigravityTranscripts.parse(lines.asSequence()))
+    fun antigravityBelongsTo(text: String, basePath: String): Boolean = AntigravityTranscripts.belongsTo(text, basePath)
+    fun antigravityTranscriptFile(): String = AntigravityTranscripts.FILE
+
+    /** Conversación de GitHub Copilot (su JSON de chatSessions) como JSON [{role, text, at}]. */
+    fun parseCopilot(json: String): String = turnsJson(CopilotSessions.parse(json))
+    fun copilotFolder(workspaceJson: String): String? = CopilotSessions.folderOf(workspaceJson)
+
+    /** {id, label, brand} de la IA de donde sale una conversación o plan, según su ruta. */
+    fun sourceOf(path: String): String = SourceKind.ofPath(path).let { Json.write(mapOf("id" to it.id, "label" to it.label, "brand" to it.brand.id)) }
+    fun pastedPath(): String = SourceKind.PASTED_PATH
+
+    // ---------- retomar un proyecto ----------
+
+    /** Las formas en que puede estar escrita una ruta con tildes (para buscar la carpeta de Claude Code). */
+    fun pathVariants(path: String): Array<String> = nfcAndNfd(path).toTypedArray()
+    fun nfcOf(text: String): String = nfc(text)
+    fun recentMs(): Double = Resume.RECENT_MS.toDouble()
+    fun ago(thenMs: Double, nowMs: Double): String = Resume.ago(thenMs.toLong(), nowMs.toLong())
+
+    /** Mensaje para pegar en un chat nuevo. [steps]: [{label, done: true|false|null}]. */
+    fun resumeHandoff(project: String, source: String, ago: String, title: String?, steps: String, excerpt: String?): String {
+        val list = Json.parse(steps).asList().map { it.asMap() }.map { it.str("label").orEmpty() to (it["done"] as? Boolean) }
+        return Resume.handoff(project, source, ago, title, list, excerpt)
+    }
+
+    private fun turnsJson(turns: List<SessionTurn>) = Json.write(turns.map { mapOf("role" to it.role, "text" to it.text, "at" to it.at) })
 
     /** Mensajes de una sesión de Claude Code (líneas del .jsonl) como JSON [{role, text, at}]. */
     fun parseSession(lines: Array<String>): String =

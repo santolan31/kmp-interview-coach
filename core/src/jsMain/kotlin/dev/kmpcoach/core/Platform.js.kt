@@ -42,6 +42,10 @@ class FetchTransport : HttpTransport {
     }
 }
 
+actual fun nfc(text: String): String = text.asDynamic().normalize("NFC") as String
+
+actual fun nfcAndNfd(text: String): List<String> = listOf(nfc(text), text.asDynamic().normalize("NFD") as String).distinct()
+
 actual fun todayIso(): String {
     // Fecha local (no UTC): el repaso «toca hoy» según el reloj de la persona.
     val d: dynamic = js("new Date()")

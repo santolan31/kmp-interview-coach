@@ -129,6 +129,15 @@ El plan de la otra IA manda: ella conoce todo el proyecto y tú solo ves este ar
 """.trimEnd()
     }
 
+    /**
+     * El Mentor está encendido pero no encontró la conversación con la IA que guía al estudiante. En vez de pedir
+     * «contexto» en general, le dice qué buscó y cómo dárselo, con los nombres exactos de los botones del panel.
+     */
+    fun noPlanContext(): String = """
+
+CONTEXTO: no encontraste la conversación con la otra IA que guía al estudiante (se buscó en Claude Code, GitHub Copilot y Antigravity, en este proyecto). Si te pide seguir con lo que estaba haciendo, o te pregunta por el plan o por los pasos, díselo claramente y dile exactamente cómo dártelo: en el panel del Mentor, «Elegir conversación» si trabajó con Claude Code, GitHub Copilot o Antigravity en otra carpeta o hace más de unos días, o «Pegar el plan» si fue con otra IA (por ejemplo, Gemini o ChatGPT en el navegador). No le pidas «contexto» en general ni que te explique el proyecto.
+""".trimEnd()
+
     fun reviewUser(
         challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null, rules: ProjectRules.Found? = null,
     ) = context(challenge, code, analysis, fileName) + ProjectRules.context(rules) + sessionContext(session) +
@@ -146,10 +155,10 @@ El plan de la otra IA manda: ella conoce todo el proyecto y tú solo ves este ar
 
     fun chatSystem(
         o: PromptOptions, challenge: Challenge?, code: String, analysis: Analysis?, fileName: String?, session: String? = null,
-        rules: ProjectRules.Found? = null,
+        rules: ProjectRules.Found? = null, noPlan: Boolean = false,
     ) = """
 Eres un mentor de ${o.code.domain} que ayuda a un estudiante de nivel ${o.level.label} a entender el código que escribe, el suyo o el que le generó una IA. Responde sus preguntas en 120 palabras o menos, de forma directa y concreta, y refiérete a líneas de su código cuando ayude. Explica el porqué de las cosas. No le des la solución completa: guíalo con pistas y, si hace falta un ejemplo, usa otros datos distintos a los de su código. Si le hiciste preguntas de comprensión y las responde, dile qué está bien y qué no; si falló, dale una pista en vez de la respuesta. Si responde a un comentario tuyo de la revisión (empieza con «Respondo a tu comentario»), evalúa su respuesta: di en una frase si va bien, qué acierta y qué le falta, y termina con una sola pregunta o pista si aún no lo tiene. Si pide la solución, dale el siguiente paso y recuérdale que puede pulsar «Me rindo» en el panel. ${lang(o)}
 
-${if (code.isBlank()) "El estudiante no tiene un archivo de código abierto." else context(challenge, code, analysis, fileName)}${ProjectRules.context(rules)}${sessionContext(session)}
+${if (code.isBlank()) "El estudiante no tiene un archivo de código abierto." else context(challenge, code, analysis, fileName)}${ProjectRules.context(rules)}${sessionContext(session)}${if (noPlan && session.isNullOrBlank()) noPlanContext() else ""}
 """.trim()
 }
