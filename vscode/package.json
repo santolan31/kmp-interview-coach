@@ -2,7 +2,7 @@
   "name": "mentor",
   "displayName": "Mentor",
   "description": "Un mentor de IA dentro del editor: te guía con pistas y preguntas en vez de escribir el código por ti. Usa tu clave de API o tu suscripción (Claude Code, Cursor), y sigue los planes de Claude Code y Antigravity.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "publisher": "santolan31",
   "license": "SEE LICENSE IN LICENSE",
   "repository": { "type": "git", "url": "https://github.com/santolan31/kmp-interview-coach" },
@@ -44,7 +44,9 @@
       { "command": "mentor.guide.verify", "title": "¿Cumple el paso?", "category": "Mentor" },
       { "command": "mentor.guide.explain", "title": "Explícame este paso", "category": "Mentor" },
       { "command": "mentor.guide.advance", "title": "Avanzar al siguiente paso", "category": "Mentor" },
-      { "command": "mentor.guide.done", "title": "Marcar el paso como hecho", "category": "Mentor" }
+      { "command": "mentor.guide.done", "title": "Marcar el paso como hecho", "category": "Mentor" },
+      { "command": "mentor.guide.menu", "title": "Acciones del paso actual", "category": "Mentor" },
+      { "command": "mentor.openComment", "title": "Responder al comentario", "category": "Mentor" }
     ],
     "menus": {
       "comments/commentThread/context": [
@@ -56,6 +58,7 @@
       "commandPalette": [
         { "command": "mentor.reply", "when": "false" },
         { "command": "mentor.resolveComment", "when": "false" },
+        { "command": "mentor.openComment", "when": "false" },
         { "command": "mentor.guide.goTo", "when": "false" },
         { "command": "mentor.guide.goToLine", "when": "false" },
         { "command": "mentor.guide.skeleton", "when": "false" },

@@ -127,6 +127,9 @@ object StepParser {
         var verify: String? = null
         var link: Pair<String, Int>? = null
         var inDiff = false
+        // Espacios antes de la apertura del bloque (```diff dentro de una lista): se quitan de cada línea, como hace
+        // Markdown, para que «  -    código» se lea como una línea que sale y no como una que se queda.
+        var fenceIndent = 0
         var inOtherBlock = false
         var diff = ArrayList<DiffLine>()
         var readingVerify = false
@@ -144,7 +147,7 @@ object StepParser {
                     if (number != null && link != null && diff.isNotEmpty()) edits += StepEdit(link!!.first, link!!.second, diff.toList())
                     link = null
                 } else {
-                    diff += diffLine(raw)
+                    diff += diffLine(dedent(raw, fenceIndent))
                 }
                 continue
             }
@@ -153,7 +156,9 @@ object StepParser {
                 continue
             }
             if (trimmed.startsWith("```")) {
-                if (trimmed.removePrefix("```").trim().equals("diff", ignoreCase = true)) { inDiff = true; diff = ArrayList() } else inOtherBlock = true
+                if (trimmed.removePrefix("```").trim().equals("diff", ignoreCase = true)) {
+                    inDiff = true; diff = ArrayList(); fenceIndent = raw.length - raw.trimStart(' ').length
+                } else inOtherBlock = true
                 readingVerify = false
                 continue
             }
@@ -179,6 +184,13 @@ object StepParser {
         return steps
     }
 
+    /** Quita hasta [n] espacios del inicio: la sangría del bloque, no la del código. */
+    private fun dedent(raw: String, n: Int): String {
+        var k = 0
+        while (k < n && k < raw.length && raw[k] == ' ') k++
+        return raw.substring(k)
+    }
+
     private fun diffLine(raw: String): DiffLine = when {
         raw.isEmpty() -> DiffLine(' ', "")
         raw[0] == '+' || raw[0] == '-' || raw[0] == ' ' -> DiffLine(raw[0], raw.substring(1))
@@ -186,8 +198,27 @@ object StepParser {
     }
 
     private fun resolve(path: String, basePath: String?): String {
-        val p = path.removePrefix("file://").replace("%20", " ")
-        return if (p.startsWith("/") || basePath == null) p else "${basePath.trimEnd('/')}/$p"
+        val p = percentDecode(path.removePrefix("file://"))
+        // En NFC: la «ó» puede llegar como una letra o como «o» + tilde suelta (NFD); así se compara igual con la ruta del editor.
+        return nfc(if (p.startsWith("/") || basePath == null) p else "${basePath.trimEnd('/')}/$p")
+    }
+
+    /**
+     * `%C3%B3` → `ó`: los enlaces file:// llevan los espacios y las tildes codificados en UTF-8. Una secuencia mal
+     * formada se deja tal cual (mejor una ruta rara que perder el enlace).
+     */
+    internal fun percentDecode(s: String): String {
+        if ('%' !in s) return s
+        val out = StringBuilder()
+        val bytes = ArrayList<Byte>()
+        fun flush() { if (bytes.isNotEmpty()) { out.append(bytes.toByteArray().decodeToString()); bytes.clear() } }
+        var i = 0
+        while (i < s.length) {
+            val hex = if (s[i] == '%' && i + 2 < s.length) s.substring(i + 1, i + 3).toIntOrNull(16) else null
+            if (hex != null) { bytes += hex.toByte(); i += 3 } else { flush(); out.append(s[i]); i++ }
+        }
+        flush()
+        return out.toString()
     }
 
     private fun clean(s: String) = s.replace("**", "").replace("`", "").trim()
@@ -327,8 +358,11 @@ object StepMatcher {
         val todoCall = edit.added.any { "TODO(" in it } && "TODO(" in text
 
         if (edit.isDeletion) {
-            val gone = find(file, edit.removed).isEmpty()
-            return EditStatus(emptyList(), false, false, gone && !hasErrors, cursor, !gone)
+            // Un borrado no deja TODO: lo que falta es el código que sigue ahí. Se marca como «borrar» en su línea, para
+            // que la barra lo diga y te lleve ahí aunque estés en otro archivo del paso.
+            val left = leftover(file, edit)
+            val marks = left?.let { listOf(TodoMark(DELETE_LABEL, norm(file[it]), TodoState.MISSING, it)) }.orEmpty()
+            return EditStatus(marks, false, false, left == null && !hasErrors, left ?: cursor, left != null)
         }
         if (!edit.isSkeleton) {
             return EditStatus(emptyList(), false, false, afterFound && !hasErrors, cursor, afterFound || beforeFound)
@@ -353,6 +387,27 @@ object StepMatcher {
         // El cursor va a lo primero que falta; si no falta nada visible, a donde empieza el cambio.
         val firstGap = marks.firstOrNull { it.missing && it.line != null }?.line
         return EditStatus(marks, placed, canPlace, complete, firstGap ?: cursor, placed || beforeFound || seenPlaced)
+    }
+
+    /** Etiqueta de lo que falta en un paso que borra código: «Te falta borrar (en X.kt): …». */
+    const val DELETE_LABEL = "borrar"
+
+    /**
+     * Primera línea (0-based) del código que el paso manda borrar y que sigue en el archivo; null si ya no está.
+     * Si solo borraste una parte (la primera línea de un bloque, por ejemplo), cuenta lo que queda cerca de donde estaba;
+     * las líneas muy cortas («}») no cuentan porque aparecen en cualquier parte.
+     */
+    fun leftover(file: List<String>, edit: StepEdit): Int? {
+        val hint = (edit.line - 1).coerceAtLeast(0)
+        nearest(find(file, edit.removed), hint)?.let { block ->
+            return block.firstOrNull { norm(file[it]).length >= 8 } ?: block.first()
+        }
+        val strong = edit.removed.map(::norm).filter { it.length >= 8 }.toSet()
+        if (strong.isEmpty()) return null
+        val span = edit.removed.size + 3
+        val area = locate(file, edit.anchorBefore, edit.anchorAfter, edit.removed.size, hint)
+            ?: (hint - span - 12).coerceAtLeast(0)..(hint + span + 12)
+        return file.indices.filter { it in area && norm(file[it]) in strong }.minByOrNull { kotlin.math.abs(it - hint) }
     }
 
     /** Si un TODO está hecho y dónde va, mirando tu código. */
@@ -389,6 +444,41 @@ data class StepVerdict(val ok: Boolean, val gaps: List<StepGap>) {
 }
 
 object StepPrompts {
+    /**
+     * Lo que se le pide al Mentor en «Explícame este paso»: qué lograr y por qué, sin código. Si ya empezaste, también cómo
+     * vas (qué cambio ya está y qué falta, con archivo y línea), para que no te explique lo que ya hiciste y se centre
+     * en lo que falta. [statuses]: el estado de cada cambio, en el mismo orden que [GuideStep.edits].
+     */
+    fun explainRequest(step: GuideStep, statuses: List<EditStatus>): String = buildString {
+        val todos = step.edits.flatMap { it.todos }.joinToString("; ") { "${it.first}: ${it.second}" }
+        append("Explícame el ${step.label}: qué tengo que lograr")
+        if (todos.isNotEmpty()) append(" en cada TODO ($todos)")
+        append(" y por qué, punto por punto, sin darme el código.")
+        val pairs = step.edits.zip(statuses)
+        val done = pairs.filter { it.second.complete }.map { it.first.fileName }.distinct()
+        val left = pairs.filter { !it.second.complete }
+        val started = done.isNotEmpty() || left.any { (_, s) -> s.todos.any { it.state == TodoState.DONE } }
+        if (!started) return@buildString
+        if (left.isEmpty()) {
+            append(" Cómo voy: según mi código ya hice todos los cambios del paso; dime cómo comprobar que está bien.")
+            return@buildString
+        }
+        if (done.isNotEmpty()) append(" Cómo voy: ya hice lo de ${done.joinToString(", ")}.") else append(" Cómo voy:")
+        append(" Me falta: ")
+        append(left.joinToString("; ") { (e, s) -> pending(e, s) })
+        append(". Céntrate en lo que me falta.")
+    }
+
+    /** «borrar en HomeViewModel.kt, línea 207 («HomeAction.NotificationClicked -> {»)», o el cambio y dónde va. */
+    private fun pending(e: StepEdit, s: EditStatus): String {
+        val marks = s.todos.filter { it.missing }
+        if (marks.isEmpty()) return "el cambio en ${e.fileName}, línea ${(s.cursorLine ?: (e.line - 1)).coerceAtLeast(0) + 1}"
+        return marks.joinToString("; ") { m ->
+            val what = if (m.label == StepMatcher.DELETE_LABEL) "borrar" else if (m.state == TodoState.PENDING) "${m.label} (el comentario sigue escrito)" else m.label
+            "$what en ${e.fileName}" + (m.line?.let { ", línea ${it + 1}" } ?: "") + " («${m.text}»)"
+        }
+    }
+
     fun verifySystem(o: PromptOptions) = """
 Eres un mentor de ${o.code.domain}. El estudiante (nivel ${o.level.label}) sigue un paso que le dio otra IA y quiere saber si su código ya lo cumple. Compara su código con lo que pide el paso: el paso y las reglas del proyecto mandan; no pidas nada que ellos no pidan ni propongas otra forma de hacerlo. Los TODO del paso son huecos que él debía completar con su propio código, no texto que deba quedar.
 Si falta algo, sé explícito: una frase con lo que debe quedar para que esté correcto y en qué parte («la campana activa debe usar el mismo color que tenía antes del cambio; ahora usa `primary`»). Puedes nombrar la API o el valor del tema que corresponde, pero no escribas el código completo. Una sola frase por cosa que falte: no repitas lo mismo con otras palabras. ${Prompts.lang(o)}

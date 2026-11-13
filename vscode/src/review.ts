@@ -3,6 +3,7 @@ import { core } from "./core";
 import { Mentor } from "./mentor";
 import { readRules } from "./context";
 import { around, followLine } from "./lines";
+import { NOTE_COLORS, NoteKind, noteTitle } from "./banner";
 
 /** Un comentario de la revisión, con lo que hace falta para responderlo y saber si ya quedó viejo. */
 interface ReviewComment {
@@ -29,16 +30,21 @@ export interface ReviewSummary {
 }
 
 /** Colores de cada tipo de comentario, los mismos del plugin de Android Studio. */
-const COLORS: Record<string, string> = { error: "#EC7C69", mejora: "#E3A443", pregunta: "#8DB8F2", bien: "#5DBE8A" };
+const COLORS: Record<string, string> = { error: NOTE_COLORS.error, mejora: NOTE_COLORS.mejora, pregunta: NOTE_COLORS.pregunta, bien: NOTE_COLORS.bien };
 
 /**
- * Revisión del archivo con la API de comentarios de VS Code (la misma de las revisiones de código): cada comentario es
- * un hilo bajo su línea, con caja para responder y botón «Resolver». La línea se subraya con el color del tipo.
- * Los comentarios no cambian solos con cada tecla: se actualizan cuando pides otra revisión, salvo los que hablan de un
- * código que ya cambiaste, que se resuelven solos.
+ * Revisión del archivo, compacta como en Android Studio: cada comentario es una línea pequeña sobre su código
+ * (CodeLens: «$(error) Error · … · Responder · Resolver») y la línea lleva un borde del color del tipo. No ocupa
+ * espacio ni te quita el foco mientras escribes. El recuadro con la caja de respuesta (la API de comentarios de VS Code)
+ * queda plegado y solo se abre al pulsar «Responder». Los comentarios no cambian solos con cada tecla: se actualizan
+ * cuando pides otra revisión, salvo los que hablan de un código que ya cambiaste, que se resuelven solos.
  */
-export class Reviews implements vscode.Disposable {
+export class Reviews implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly controller = vscode.comments.createCommentController("mentor", "Mentor");
+  private readonly lensesChanged = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this.lensesChanged.event;
+  /** Borde a la izquierda de cada línea comentada, del color de su tipo. */
+  private readonly borders = new Map<string, vscode.TextEditorDecorationType>();
   private readonly byDoc = new Map<string, ReviewComment[]>();
   private readonly summaries = new Map<string, ReviewSummary>();
   private readonly busy = new Set<string>();
@@ -49,6 +55,9 @@ export class Reviews implements vscode.Disposable {
   constructor(private readonly mentor: Mentor) {
     this.controller.options = { prompt: "Responde al Mentor…", placeHolder: "Tu respuesta o tu pregunta (el Mentor contesta aquí mismo)" };
     for (const [type, color] of Object.entries(COLORS)) {
+      this.borders.set(type, vscode.window.createTextEditorDecorationType({
+        isWholeLine: true, borderWidth: "0 0 0 3px", borderStyle: "solid", borderColor: color,
+      }));
       if (type === "bien") continue;
       this.decorations.set(type, vscode.window.createTextEditorDecorationType({
         textDecoration: `underline wavy ${color}`,
@@ -58,7 +67,9 @@ export class Reviews implements vscode.Disposable {
     }
     this.disposables.push(
       this.controller,
+      this.lensesChanged,
       ...this.decorations.values(),
+      ...this.borders.values(),
       vscode.workspace.onDidChangeTextDocument((e) => this.onEdit(e)),
       vscode.window.onDidChangeVisibleTextEditors(() => this.paint()),
     );
@@ -112,7 +123,8 @@ export class Reviews implements vscode.Disposable {
     thread.label = `Mentor · ${c.typeLabel}`;
     thread.canReply = c.type !== "bien";
     thread.contextValue = "mentor";
-    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    // Plegado: el comentario se lee en su CodeLens; el recuadro con la caja de respuesta solo se abre al pulsar «Responder».
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
     return { thread, line, type: c.type, typeLabel: c.typeLabel, message: c.message, origin: around(lines, line), replies: [], busy: false };
   }
 
@@ -139,6 +151,7 @@ export class Reviews implements vscode.Disposable {
       c.thread.comments = [...c.thread.comments.slice(0, -1), comment("Mentor", out)];
     } finally {
       c.busy = false;
+      this.lensesChanged.fire(); // «Responder» pasa a «Ver la conversación (n)»
     }
   }
 
@@ -163,6 +176,32 @@ export class Reviews implements vscode.Disposable {
     this.byDoc.get(k)?.forEach((c) => c.thread.dispose());
     this.byDoc.delete(k);
     this.paint();
+  }
+
+  /** «Responder»: abre el recuadro del comentario con su caja de respuesta. */
+  async open(uri: string, index: number) {
+    const c = this.byDoc.get(uri)?.[index];
+    if (!c) return;
+    c.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri);
+    if (doc) await this.reveal(doc, index);
+  }
+
+  /** Cada comentario en una línea sobre su código, con «Responder» y «Resolver». */
+  provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
+    const list = this.byDoc.get(doc.uri.toString()) ?? [];
+    return list.flatMap((c, i) => {
+      if (c.line >= doc.lineCount) return [];
+      const at = new vscode.Range(c.line, 0, c.line, 0);
+      const kind = (c.type in NOTE_COLORS ? c.type : "pregunta") as NoteKind;
+      const lenses = [new vscode.CodeLens(at, { title: noteTitle(kind, `${c.typeLabel} (Mentor)`, c.message), command: "", tooltip: `${c.typeLabel}: ${c.message}` })];
+      const talked = c.replies.length > 0;
+      if (c.thread.canReply || talked) {
+        lenses.push(new vscode.CodeLens(at, { title: talked ? `Ver la conversación (${c.replies.length})` : "Responder", command: "mentor.openComment", arguments: [doc.uri.toString(), i], tooltip: "Abre la caja para responderle al Mentor aquí mismo" }));
+      }
+      lenses.push(new vscode.CodeLens(at, { title: "Resolver", command: "mentor.resolveComment", arguments: [c.thread], tooltip: "Quitar este comentario del editor" }));
+      return lenses;
+    });
   }
 
   /** Muestra en el editor el comentario [index] (desde el panel). */
@@ -230,7 +269,14 @@ export class Reviews implements vscode.Disposable {
         });
         ed.setDecorations(deco, ranges);
       }
+      for (const [type, border] of this.borders) {
+        ed.setDecorations(border, list.filter((c) => c.type === type && c.line < ed.document.lineCount).map((c) => ({
+          range: new vscode.Range(c.line, 0, c.line, 0),
+          hoverMessage: new vscode.MarkdownString(`**${c.typeLabel} (Mentor)** · ${c.message}`),
+        })));
+      }
     }
+    this.lensesChanged.fire();
   }
 
   dispose() {

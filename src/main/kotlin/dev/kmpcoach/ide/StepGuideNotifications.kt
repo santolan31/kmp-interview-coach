@@ -9,6 +9,7 @@ import com.intellij.ui.EditorNotificationPanel
 import com.intellij.ui.EditorNotificationProvider
 import dev.kmpcoach.core.GuideStep
 import dev.kmpcoach.core.TodoState
+import dev.kmpcoach.core.nfc
 import java.util.function.Function
 import javax.swing.JComponent
 
@@ -33,7 +34,8 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
         val cur = view.current
         val step = cur.step
         val head = "Paso ${step.number} (${cur.index + 1} de ${view.steps.size})"
-        val here = cur.edits.filter { it.edit.path == file.path }
+        // Las rutas del plan vienen en NFC («ó» de una pieza); la del archivo puede venir en NFD.
+        val here = cur.edits.filter { it.edit.path == nfc(file.path) }
         // Lo que falta según la comprobación gratis: en este archivo primero.
         val gaps = (here + cur.edits.filter { it !in here }).flatMap { ev -> ev.status.todos.filter { it.missing }.map { ev to it } }
         val verdict = cur.verdict
@@ -93,9 +95,13 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
                 addActions(panel, guide, step, here, file)
             }
             else -> {
-                // No hay TODO pendientes que yo pueda ver: o falta compilar, o hace falta que el tutor lo confirme.
-                panel.text = "$head · ${clip(step.title, 60)} · no veo TODO pendientes: si compila, pulsa «¿Cumple el paso?»"
-                here.firstOrNull { !it.status.complete }?.let { ev -> panel.createActionLabel("Ir al código") { guide.goTo(ev) } }
+                // Sin TODO pendientes. Lo que falta puede estar en otro archivo del paso (borrar algo y luego quien lo usa).
+                val open = here.firstOrNull { !it.status.complete }
+                val elsewhere = cur.edits.firstOrNull { it !in here && !it.status.complete }
+                panel.text = if (open == null && elsewhere != null) "$head · aquí ya está · falta en ${elsewhere.edit.fileName}"
+                    else "$head · ${clip(step.title, 60)} · no veo TODO pendientes: si compila, pulsa «¿Cumple el paso?»"
+                open?.let { ev -> panel.createActionLabel("Ir al código") { guide.goTo(ev) } }
+                elsewhere?.let { ev -> panel.createActionLabel("Ir a ${ev.edit.fileName} ›") { guide.goTo(ev) } }
                 addActions(panel, guide, step, here, file)
             }
         }

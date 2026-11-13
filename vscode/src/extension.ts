@@ -9,6 +9,7 @@ import { Hints } from "./hints";
 import { Guide } from "./guide";
 import { brandIcon, brandOfProvider, initBrands } from "./brands";
 import { copilotModels } from "./copilot";
+import { statusText } from "./banner";
 
 /**
  * Punto de entrada de la extensión. Conecta el estado del Mentor con el panel lateral, el botón de la barra de estado
@@ -46,12 +47,32 @@ export function activate(context: vscode.ExtensionContext) {
     status.show();
   };
 
+  // Barra de estado del paso: siempre a la vista (la barra de Android Studio no se va al desplazarte). Clic = sus acciones.
+  const stepStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  stepStatus.command = "mentor.guide.menu";
+  const syncStep = () => {
+    const b = guide.banner(activeDoc());
+    if (!b) return stepStatus.hide();
+    stepStatus.text = statusText(b);
+    stepStatus.tooltip = `${b.text}\n\n${b.tooltip}\n\nClic: acciones del paso`;
+    stepStatus.backgroundColor = b.level === "warn" ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+    stepStatus.show();
+  };
+
   context.subscriptions.push(
     mentor,
     reviews,
     hints,
     guide,
     status,
+    stepStatus,
+    // La guía cambió (escribiste, comprobaste, avanzaste): se actualizan la barra de estado y la tarjeta del panel.
+    guide.onDidChangeCodeLenses(() => { syncStep(); panel.render(); }),
+    vscode.window.onDidChangeActiveTextEditor(() => syncStep()),
+    // Los comentarios de la revisión, en una línea sobre su código (como los bloques de Android Studio).
+    vscode.languages.registerCodeLensProvider({ scheme: "file" }, reviews),
+    vscode.commands.registerCommand("mentor.openComment", (uri: string, i: number) => reviews.open(uri, i)),
+    vscode.commands.registerCommand("mentor.guide.menu", () => guide.menu()),
     // La guía de pasos: una línea con el paso y sus acciones arriba de cada archivo con el Mentor encendido.
     vscode.languages.registerCodeLensProvider({ scheme: "file" }, guide),
     vscode.commands.registerCommand("mentor.guide.goTo", (s: number, e: number) => guide.goTo(s, e)),

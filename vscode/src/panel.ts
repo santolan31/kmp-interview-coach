@@ -54,6 +54,7 @@ export class Panel implements vscode.WebviewViewProvider {
       case "provider": return vscode.commands.executeCommand("mentor.chooseProvider");
       case "model": return vscode.commands.executeCommand("mentor.chooseModel");
       case "setModel": return this.setModel(m.arg ?? "");
+      case "step": return this.runStepAction(Number(m.arg));
       case "session": return this.mentor.chooseSession(doc);
       case "paste": return this.mentor.pastePlan(doc);
       case "copyResume": return this.mentor.copyResume(doc);
@@ -156,7 +157,26 @@ export class Panel implements vscode.WebviewViewProvider {
       : "Apagado en este archivo: nada aparece solo. Enciéndelo cuando lo necesites.";
     return `<div class="row"><div class="file">${name} <span class="muted">· ${esc(core.languageOf(this.mentor.relativePath(doc)))}</span></div>` +
       `<button class="switch ${on ? "on" : ""}" data-action="toggle" title="Encender o apagar el Mentor en este archivo (⌘⌥⇧T)">${on ? "Activo" : "Apagado"}</button></div>` +
-      `<div class="muted">${status}</div>`;
+      `<div class="muted">${status}</div>` + this.stepCard(doc);
+  }
+
+  /**
+   * La barra del paso, fija arriba del panel como la de Android Studio sobre el editor: qué paso es, qué falta y sus
+   * acciones. Azul mientras trabajas, amarilla si el Mentor encontró algo que falta, verde con el paso completo.
+   */
+  private stepCard(doc: vscode.TextDocument | undefined): string {
+    const b = this.guide.banner(doc);
+    if (!b) return "";
+    const actions = b.actions.map((a, i) => a.command
+      ? `<a data-action="step" data-arg="${i}"${a.tooltip ? ` title="${esc(a.tooltip)}"` : ""}>${esc(a.label)}</a>`
+      : `<span class="muted">${esc(a.label)}</span>`).join(" · ");
+    return `<div class="stepbar ${b.level}" title="${esc(b.tooltip)}"><div>${esc(b.text)}</div>` + (actions ? `<div class="stepactions">${actions}</div>` : "") + `</div>`;
+  }
+
+  /** Una acción de la tarjeta del paso. Se vuelve a calcular la barra: el panel nunca envía comandos por su cuenta. */
+  private async runStepAction(index: number) {
+    const a = this.guide.banner(this.doc)?.actions[index];
+    if (a?.command) await vscode.commands.executeCommand(a.command, ...a.args);
   }
 
   private chatHtml(doc: vscode.TextDocument | undefined): string {
@@ -346,6 +366,10 @@ function shell(n: string): string {
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--vscode-descriptionForeground); vertical-align: 0; }
   .dot.ok { background: #5DBE8A; } .dot.bad { background: #EC7C69; }
   .warncard { border-left-color: var(--vscode-editorWarning-foreground); }
+  .stepbar { margin-top: 8px; padding: 6px 8px; border-radius: 6px; line-height: 1.4; border-left: 3px solid var(--vscode-focusBorder); background: var(--vscode-editorInfo-background, rgba(77,141,246,0.12)); }
+  .stepbar.warn { border-left-color: var(--vscode-editorWarning-foreground); background: var(--vscode-editorWarning-background, rgba(227,164,67,0.14)); }
+  .stepbar.ok { border-left-color: #5DBE8A; background: rgba(93,190,138,0.12); }
+  .stepactions { margin-top: 4px; }
   code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); padding: 0 3px; border-radius: 3px; }
   pre { background: var(--vscode-textCodeBlock-background); padding: 8px; border-radius: 6px; overflow-x: auto; }
   pre code { background: none; padding: 0; }

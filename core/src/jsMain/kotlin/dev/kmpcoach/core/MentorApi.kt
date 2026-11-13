@@ -212,6 +212,18 @@ object MentorApi {
         ))
     }
 
+    /** Pedido de «Explícame este paso» con cómo vas. [statuses]: la salida de [editStatus] de cada cambio del paso, en orden. */
+    fun explainRequest(markdown: String, basePath: String?, step: Int, statuses: String): String {
+        val st = parse(markdown, basePath)[step]
+        val list = Json.parse(statuses).asList().map { it.asMap() }.map { m ->
+            val todos = m["todos"].asList().map { it.asMap() }.map { t ->
+                TodoMark(t.str("label").orEmpty(), t.str("text").orEmpty(), TodoState.valueOf(t.str("state") ?: TodoState.UNKNOWN.name), t.int("line"))
+            }
+            EditStatus(todos, m["skeletonPlaced"] == true, m["canPlaceSkeleton"] == true, m["complete"] == true, m.int("cursorLine"), m["found"] == true)
+        }
+        return StepPrompts.explainRequest(st, list)
+    }
+
     /** Reemplazo que pone el esqueleto (solo los TODO): {from, to, lines} (líneas 0-based, inclusivas), o null. */
     fun placeSkeleton(markdown: String, basePath: String?, step: Int, edit: Int, fileText: String): String? =
         StepMatcher.placeSkeleton(fileText.lines(), parse(markdown, basePath)[step].edits[edit])?.let {

@@ -83,6 +83,23 @@ class StepGuideTest {
     private val steps = StepParser.parse(message, "/base")
 
     @Test
+    fun linksWithEncodedAccentsPointToTheRealFile() {
+        // Antigravity y Copilot escriben enlaces file:// con las tildes codificadas (%C3%B3) y a veces en NFD (o + %CC%81).
+        val md = listOf(
+            "## Paso 1: tilde codificada",
+            "[Factura.kt](file:///Users/s/Documents/Facturaci%C3%B3napp/Mi%20App/Factura.kt#L3)",
+            "```diff", "+val a = 1", "```",
+            "## Paso 2: tilde separada (NFD)",
+            "[Factura.kt](file:///Users/s/Documents/Facturacio%CC%81napp/Factura.kt)",
+            "```diff", "+val b = 2", "```",
+        ).joinToString("\n")
+        val steps = StepParser.parse(md, "/Users/s/Documents/Facturaciónapp")
+        assertEquals("/Users/s/Documents/Facturaciónapp/Mi App/Factura.kt", steps[0].edits[0].path)
+        assertEquals(3, steps[0].edits[0].line)
+        assertEquals("las dos formas de la tilde quedan iguales (NFC)", "/Users/s/Documents/Facturaciónapp/Factura.kt", steps[1].edits[0].path)
+    }
+
+    @Test
     fun parsesStepsFilesAndChecks() {
         assertTrue(StepParser.hasSteps(message))
         assertEquals(listOf("5.1", "5.3", "5.4"), steps.map { it.number })
@@ -215,6 +232,97 @@ class StepGuideTest {
         val withLine = listOf("sealed interface HomeAction {", "    data object NotificationClicked: HomeAction", "}")
         assertFalse(StepMatcher.status(withLine, edit, hasErrors = false, seenPlaced = false).complete)
         assertTrue(StepMatcher.status(listOf("sealed interface HomeAction {", "}"), edit, hasErrors = false, seenPlaced = false).complete)
+    }
+
+    // Como en el plan real: el ```diff va dentro de una lista, con sangría. La sangría es del bloque, no del diff.
+    @Test
+    fun diffInsideAListItemKeepsItsKinds() {
+        val md = listOf(
+            "## Paso 5.4: borrar la acción que ya nadie usa",
+            "- [HomeAction.kt:8](file:///p/HomeAction.kt#L8)",
+            "  ```diff",
+            "  -    data object NotificationClicked: HomeAction",
+            "  ```",
+            "- [HomeViewModel.kt:207-209](file:///p/HomeViewModel.kt#L207-L209)",
+            "  ```diff",
+            "  -            HomeAction.NotificationClicked -> {",
+            "  -                // Notificaciones",
+            "  -            }",
+            "  ```",
+        ).joinToString("\n")
+        val edits = StepParser.parse(md, null).single().edits
+        assertEquals(listOf("HomeAction.kt", "HomeViewModel.kt"), edits.map { it.fileName })
+        assertTrue(edits.all { it.isDeletion })
+        assertEquals("    data object NotificationClicked: HomeAction", edits[0].removed.single())
+        assertEquals("            HomeAction.NotificationClicked -> {", edits[1].removed.first())
+    }
+
+    // Un paso que solo borra no tiene TODO: lo que falta es lo que sigue escrito, con su línea para llevarte ahí.
+    @Test
+    fun deletionLeftSaysWhatToDeleteAndWhere() {
+        val edit = steps[2].edits.single()
+        val withLine = listOf("sealed interface HomeAction {", "    data object NotificationClicked: HomeAction", "}")
+        val st = StepMatcher.status(withLine, edit, hasErrors = false, seenPlaced = false)
+        val mark = st.todos.single()
+        assertEquals(StepMatcher.DELETE_LABEL, mark.label)
+        assertEquals("data object NotificationClicked: HomeAction", mark.text)
+        assertEquals(TodoState.MISSING, mark.state)
+        assertEquals(1, mark.line)
+        assertEquals(1, st.cursorLine)
+        assertTrue(StepMatcher.status(listOf("sealed interface HomeAction {", "}"), edit, hasErrors = false, seenPlaced = false).todos.isEmpty())
+    }
+
+    private val branch = StepEdit("/p/HomeViewModel.kt", 5, listOf(
+        DiffLine('-', "            HomeAction.NotificationClicked -> {"),
+        DiffLine('-', "                // Notificaciones"),
+        DiffLine('-', "            }"),
+    ))
+
+    private fun viewModel(vararg branchLines: String) = listOf(
+        "fun onAction(action: HomeAction) {",
+        "    when (action) {",
+        "            HomeAction.AddressClicked -> {",
+        "            }",
+    ) + branchLines + listOf("    }", "}")
+
+    @Test
+    fun halfDeletedBlockIsNotComplete() {
+        // Borraste la primera línea de la rama, pero el comentario sigue ahí.
+        val half = viewModel("                // Notificaciones", "            }")
+        val st = StepMatcher.status(half, branch, hasErrors = false, seenPlaced = false)
+        assertFalse(st.complete)
+        assertEquals(4, st.todos.single().line)
+        assertEquals("// Notificaciones", st.todos.single().text)
+
+        val whole = viewModel("            HomeAction.NotificationClicked -> {", "                // Notificaciones", "            }")
+        assertEquals("señala la línea con contenido, no la llave", 4, StepMatcher.status(whole, branch, false, false).todos.single().line)
+
+        assertTrue(StepMatcher.status(viewModel(), branch, hasErrors = false, seenPlaced = false).complete)
+    }
+
+    // «Explícame este paso» con lo que ya hiciste: el Mentor no repite lo hecho y va a lo que falta.
+    @Test
+    fun explainRequestSaysWhatIsDoneAndWhatIsLeft() {
+        val deleteLine = StepEdit("/p/HomeAction.kt", 8, listOf(DiffLine('-', "    data object NotificationClicked: HomeAction")))
+        val step = GuideStep("5.4", "borrar la acción que ya nadie usa", listOf(deleteLine, branch), null)
+        val actionDone = StepMatcher.status(listOf("sealed interface HomeAction {", "}"), deleteLine, false, false)
+        val branchLeft = StepMatcher.status(viewModel("            HomeAction.NotificationClicked -> {", "                // Notificaciones", "            }"), branch, false, false)
+
+        val text = StepPrompts.explainRequest(step, listOf(actionDone, branchLeft))
+        assertTrue(text, text.contains("ya hice lo de HomeAction.kt"))
+        assertTrue(text, text.contains("borrar en HomeViewModel.kt, línea 5 («HomeAction.NotificationClicked -> {»)"))
+        assertTrue(text, text.endsWith("Céntrate en lo que me falta."))
+
+        val notStarted = StepMatcher.status(listOf("sealed interface HomeAction {", "    data object NotificationClicked: HomeAction", "}"), deleteLine, false, false)
+        val fresh = StepPrompts.explainRequest(step, listOf(notStarted, branchLeft))
+        assertFalse("sin empezar no dice cómo vas", fresh.contains("Cómo voy"))
+    }
+
+    @Test
+    fun theSameLineFarAwayIsNotTheDeletion() {
+        // Otro «// Notificaciones» 60 líneas más abajo no es el de la rama que borraste.
+        val far = viewModel() + List(60) { "" } + listOf("    // Notificaciones")
+        assertTrue(StepMatcher.status(far, branch, hasErrors = false, seenPlaced = false).complete)
     }
 
     @Test

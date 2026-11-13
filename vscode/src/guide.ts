@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { core } from "./core";
 import { Mentor } from "./mentor";
 import { readRules, StepsSource } from "./context";
+import { BannerAction, chooseSource, clip, NOTE_COLORS, NoteKind, noteTitle, samePath, StepBanner } from "./banner";
 
 interface Todo { label: string; text: string }
 interface Edit { path: string; fileName: string; line: number; isSkeleton: boolean; isDeletion: boolean; key: string; todos: Todo[] }
@@ -16,13 +17,18 @@ interface EditView { edit: Edit; index: number; status: Status; text: string }
 interface StepView { step: Step; index: number; edits: EditView[]; complete: boolean; verdict: Verdict | null; staleVerdict: Verdict | null }
 interface View { source: StepsSource; steps: Step[]; current: StepView; next: Step | null }
 
-const GREEN = "#5DBE8A";
-const RED = "#EC7C69";
+/** Una marca del paso sobre una línea del archivo: lo que falta (rojo), la confirmación (verde) o algo ya viejo (gris). */
+interface StepNote { line: number; kind: NoteKind; label: string; message: string }
+
+/** Carpetas que nunca tienen el código del paso (al buscar un archivo cuyo enlace no apunta a nada). */
+const NOT_SOURCE = "**/{build,node_modules,.gradle,.git,.idea,out,dist}/**";
 
 /**
- * Guía de pasos en VS Code: toma el plan más reciente que habla del archivo (de Claude Code o de Antigravity) y dice
- * arriba del archivo, con un CodeLens, en qué paso vas y qué te falta, con sus acciones: ir a lo que falta, poner el
- * esqueleto, «¿Cumple el paso?», explicarlo y avanzar. La lógica (ubicar los TODO, el esqueleto, la comprobación) es la
+ * Guía de pasos en VS Code: toma el plan más reciente que habla del archivo (de Claude Code, Copilot o Antigravity) y,
+ * como la barra de Android Studio, dice en qué paso vas y qué te falta, con sus acciones: ir a lo que falta, poner el
+ * esqueleto, «¿Cumple el paso?», explicarlo y avanzar. VS Code no deja poner una barra fija dentro del editor, así que
+ * la misma barra ([banner]) se dibuja arriba del panel del Mentor, en la barra de estado y como CodeLens en la primera
+ * línea; y lo que falta se marca sobre su propia línea. La lógica (ubicar los TODO, el esqueleto, la comprobación) es la
  * del core de Kotlin, la misma del plugin de Android Studio.
  */
 export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
@@ -31,7 +37,8 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
 
   private readonly sources = new Map<string, { at: number; value: StepsSource | null }>();
   private readonly loading = new Set<string>();
-  private parsed: { id: string; steps: Step[] } | null = null;
+  /** El plan que estás siguiendo y sus pasos. Vale para todos sus archivos, no solo para el que lo mencionó último. */
+  private parsed: { source: StepsSource; steps: Step[] } | null = null;
   private viewedId: string | null = null;
   /** Cambios donde ya viste el esqueleto puesto: si un TODO desaparece, cuenta como hecho. */
   private readonly seenPlaced = new Set<string>();
@@ -43,22 +50,19 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly checked = new Set<string>();
   private timer: NodeJS.Timeout | undefined;
 
-  private readonly missing = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    backgroundColor: "rgba(236,124,105,0.10)",
-    overviewRulerColor: RED,
-    overviewRulerLane: vscode.OverviewRulerLane.Left,
-    after: { margin: "0 0 0 2em", color: RED, fontWeight: "600" },
-  });
-  private readonly confirmed = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    after: { margin: "0 0 0 2em", color: GREEN, fontWeight: "600" },
-  });
-  private readonly stale = vscode.window.createTextEditorDecorationType({
-    isWholeLine: true,
-    after: { margin: "0 0 0 2em", color: new vscode.ThemeColor("disabledForeground"), fontStyle: "italic" },
-  });
-  private readonly disposables: vscode.Disposable[] = [this.lensesChanged, this.missing, this.confirmed, this.stale];
+  /** Líneas marcadas: un borde a la izquierda y un fondo suave del color de la marca (el texto va en el CodeLens). */
+  private readonly lineStyles = new Map<NoteKind, vscode.TextEditorDecorationType>(
+    (["error", "bien", "stale"] as NoteKind[]).map((k) => [k, vscode.window.createTextEditorDecorationType({
+      isWholeLine: true,
+      borderWidth: "0 0 0 3px",
+      borderStyle: "solid",
+      borderColor: NOTE_COLORS[k],
+      backgroundColor: k === "error" ? "rgba(236,124,105,0.08)" : k === "bien" ? "rgba(93,190,138,0.08)" : undefined,
+      overviewRulerColor: NOTE_COLORS[k],
+      overviewRulerLane: vscode.OverviewRulerLane.Left,
+    })]),
+  );
+  private readonly disposables: vscode.Disposable[] = [this.lensesChanged, ...this.lineStyles.values()];
 
   constructor(private readonly mentor: Mentor) {
     this.disposables.push(
@@ -81,7 +85,11 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
 
   // ---------- de dónde salen los pasos ----------
 
-  /** Lo último encontrado para el archivo; si tiene más de 10 s, lo busca de nuevo en segundo plano. */
+  /**
+   * El plan para este archivo: el más reciente que lo menciona; pero si el plan que ya sigues tiene un cambio en este
+   * archivo y es igual de nuevo o más, se queda ese. Así, al ir al archivo del paso, sigues en el mismo plan y paso.
+   * La búsqueda se repite en segundo plano cada 10 s.
+   */
   private source(doc: vscode.TextDocument): StepsSource | null {
     const name = path.basename(doc.uri.fsPath);
     const cached = this.sources.get(name);
@@ -94,20 +102,42 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
         if (before !== value?.id) this.refreshSoon();
       });
     }
-    return cached?.value ?? null;
+    const followed = this.parsed;
+    const inFollowed = !!followed?.steps.some((s) => s.edits.some((e) => samePath(e.path, doc.uri.fsPath)));
+    return chooseSource(cached?.value ?? null, followed?.source ?? null, inFollowed);
   }
 
   private steps(src: StepsSource): Step[] {
-    if (this.parsed?.id !== src.id) {
-      this.parsed = { id: src.id, steps: JSON.parse(core.raw.steps(src.markdown, this.mentor.root)) };
+    if (this.parsed?.source.id !== src.id) {
+      const steps: Step[] = JSON.parse(core.raw.steps(src.markdown, this.mentor.root));
+      this.parsed = { source: src, steps };
       this.viewedId = null;
+      void this.findMissingFiles(steps);
     }
     return this.parsed.steps;
   }
 
+  /**
+   * Si un enlace del plan no apunta a un archivo que exista (la IA escribió solo el nombre, o una ruta de otra carpeta),
+   * se busca en el proyecto por su nombre. Si hay uno solo (o uno cuya ruta termina igual), el paso pasa a usar ese.
+   */
+  private async findMissingFiles(steps: Step[]) {
+    const missing = [...new Set(steps.flatMap((s) => s.edits.map((e) => e.path)).filter((p) => !fs.existsSync(p)))];
+    let changed = false;
+    for (const p of missing) {
+      const found = await vscode.workspace.findFiles(`**/${path.basename(p)}`, NOT_SOURCE, 20).then((u) => u.map((x) => x.fsPath), () => [] as string[]);
+      const tail = p.split("/").slice(-3).join("/");
+      const pick = found.length === 1 ? found[0] : found.find((f) => f.endsWith(tail));
+      if (!pick) continue;
+      for (const s of steps) for (const e of s.edits) if (e.path === p) e.path = pick;
+      changed = true;
+    }
+    if (changed) this.refreshSoon();
+  }
+
   /** Texto actual de un archivo: del editor si está abierto (con cambios sin guardar), si no, del disco. */
   private textOf(p: string): string {
-    const open = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === p);
+    const open = vscode.workspace.textDocuments.find((d) => samePath(d.uri.fsPath, p));
     if (open) return open.getText();
     try { return fs.readFileSync(p, "utf8"); } catch { return ""; }
   }
@@ -151,97 +181,163 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
     return { source, steps, current: this.stepView(source, steps, index), next: steps[index + 1] ?? null };
   }
 
-  // ---------- CodeLens: la barra de la guía arriba del archivo ----------
+  // ---------- la barra del paso (datos) ----------
 
-  provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
-    const v = this.view(doc);
-    if (!v) return [];
-    const top = new vscode.Range(0, 0, 0, 0);
-    const lens = (title: string, command = "", args: unknown[] = [], tooltip?: string) =>
-      new vscode.CodeLens(top, { title, command, arguments: args, tooltip });
+  /**
+   * La barra del paso para este archivo, igual que la de Android Studio: qué paso es, qué falta en palabras y sus
+   * acciones. La dibujan el panel, la barra de estado y el CodeLens de la primera línea.
+   */
+  banner(doc: vscode.TextDocument | undefined): StepBanner | null {
+    const v = doc ? this.view(doc) : null;
+    if (!doc || !v) return null;
     const cur = v.current;
     const head = `Paso ${cur.step.number} (${cur.index + 1} de ${v.steps.length})`;
-    const here = cur.edits.filter((e) => e.edit.path === doc.uri.fsPath);
+    const here = cur.edits.filter((e) => samePath(e.edit.path, doc.uri.fsPath));
     const gaps = [...here, ...cur.edits.filter((e) => !here.includes(e))].flatMap((e) => e.status.todos.filter((t) => t.missing).map((t) => ({ e, t })));
     const busy = this.verifying.has(cur.step.id);
-    const out: vscode.CodeLens[] = [];
-    const actions = (verifyLabel = "¿Cumple el paso?") => {
+    const actions: BannerAction[] = [];
+    const act = (label: string, command: string, args: unknown[] = [], tooltip?: string) => actions.push({ label, command, args, tooltip });
+    const stepActions = (verifyLabel = "¿Cumple el paso?") => {
       const canPlace = here.find((e) => e.status.canPlaceSkeleton);
-      if (canPlace) out.push(lens("Poner el esqueleto", "mentor.guide.skeleton", [cur.index, canPlace.index], "Pone solo los TODO del paso (se deshace con ⌘Z)"));
-      out.push(busy ? lens("Comprobando…") : lens(verifyLabel, "mentor.guide.verify", [cur.index], "El Mentor compara tu código con el paso"));
-      out.push(lens("Explícame este paso", "mentor.guide.explain", [cur.index]));
+      if (canPlace) act("Poner el esqueleto", "mentor.guide.skeleton", [cur.index, canPlace.index], "Pone solo los TODO del paso (se deshace con ⌘Z)");
+      if (busy) act("Comprobando…", "");
+      else act(verifyLabel, "mentor.guide.verify", [cur.index], "El Mentor compara tu código con el paso");
+      act("Explícame este paso", "mentor.guide.explain", [cur.index]);
     };
-    const from = `${v.source.kind} · «${clip(v.source.title, 40)}»`;
+    let level: StepBanner["level"] = "info";
+    let text: string;
+    let missing: string | null = null;
 
     if (cur.complete) {
-      out.push(lens(`✓ ${head} completo` + (cur.verdict?.ok ? " · el Mentor lo confirma" : ""), "", [], from));
-      if (v.next) out.push(lens(`Avanzar al paso ${v.next.number}` + (v.next.edits[0] ? ` · ${v.next.edits[0].fileName}` : "") + " ›", "mentor.guide.advance", [cur.index + 1]));
-      else out.push(lens("Terminaste los pasos de este plan"));
-      if (!cur.verdict && cur.edits.length) out.push(lens("¿Cumple el paso?", "mentor.guide.verify", [cur.index]));
+      level = "ok";
+      text = `✓ ${head} completo` + (cur.verdict?.ok ? " · el Mentor lo confirma" : "");
+      if (v.next) act(`Avanzar al paso ${v.next.number}` + (v.next.edits[0] ? ` · ${v.next.edits[0].fileName}` : "") + " ›", "mentor.guide.advance", [cur.index + 1]);
+      else act("Terminaste los pasos de este plan", "");
+      if (!cur.verdict && cur.edits.length) act("¿Cumple el paso?", "mentor.guide.verify", [cur.index]);
     } else if (cur.edits.length === 0) {
-      out.push(lens(`${head} · ${clip(cur.step.title, 60)}` + (cur.step.verify ? ` · ${clip(cur.step.verify, 70)}` : ""), "", [], from));
-      out.push(lens("Hecho", "mentor.guide.done", [cur.index]));
+      text = `${head} · ${clip(cur.step.title, 60)}` + (cur.step.verify ? ` · ${clip(cur.step.verify, 80)}` : "");
+      act("Hecho", "mentor.guide.done", [cur.index]);
     } else if (here.length === 0) {
+      // El paso es en otro archivo: se dice cuál y se lleva ahí (con el Mentor encendido allá).
       const target = cur.edits.find((e) => !e.status.complete) ?? cur.edits[0];
-      out.push(lens(`${head} · este paso sigue en ${target.edit.fileName}`, "", [], from));
-      out.push(lens("Ir ›", "mentor.guide.goTo", [cur.index, target.index]));
+      text = `${head} · este paso sigue en ${target.edit.fileName}`;
+      missing = `en ${target.edit.fileName}`;
+      act(`Ir a ${target.edit.fileName} ›`, "mentor.guide.goTo", [cur.index, target.index]);
+      act("Explícame este paso", "mentor.guide.explain", [cur.index]);
     } else if (busy) {
-      out.push(lens(`${head} · Comprobando con el Mentor…`, "", [], from));
+      text = `${head} · Comprobando con el Mentor…`;
     } else if (cur.verdict && !cur.verdict.ok) {
+      level = "warn";
       const more = cur.verdict.gaps.length - 1;
-      out.push(lens(`⚠ ${head} · El Mentor dice que falta: ${clip(cur.verdict.gaps[0]?.text ?? "algo del paso", 80)}` + (more > 0 ? ` (y ${more} más)` : "") + " · marcado en rojo", "", [], from));
+      const first = cur.verdict.gaps[0]?.text ?? "algo del paso";
+      missing = first;
+      text = `${head} · El Mentor dice que falta: ${clip(first, 80)}` + (more > 0 ? ` (y ${more} más)` : "") + " · marcado en rojo en el código";
       const gap = cur.verdict.gaps.find((g) => g.line && (!g.file || g.file === path.basename(doc.uri.fsPath)));
-      if (gap) out.push(lens("Ir a lo que falta", "mentor.guide.goToLine", [doc.uri.fsPath, gap.line! - 1]));
-      actions("Comprobar de nuevo");
+      if (gap) act("Ir a lo que falta", "mentor.guide.goToLine", [doc.uri.fsPath, gap.line! - 1]);
+      else if (gaps[0]) act("Ir a lo que falta", "mentor.guide.goTo", [cur.index, gaps[0].e.index]);
+      stepActions("Comprobar de nuevo");
     } else if (gaps.length) {
       const { e, t } = gaps[0];
-      const where = e.edit.path !== doc.uri.fsPath ? ` (en ${e.edit.fileName})` : "";
+      const where = !samePath(e.edit.path, doc.uri.fsPath) ? ` (en ${e.edit.fileName})` : "";
       const more = gaps.length > 1 ? ` · y ${gaps.length - 1} más` : "";
-      out.push(lens(t.state === "PENDING"
+      missing = `${t.label}${where}`;
+      text = t.state === "PENDING"
         ? `${head} · ${t.label}${where} sigue escrito: ${clip(t.text, 60)} · cuando lo completes, borra el comentario${more}`
-        : `${head} · Te falta ${t.label}${where}: ${clip(t.text, 80)}${more}`, "", [], from));
-      out.push(lens("Ir a lo que falta", "mentor.guide.goTo", [cur.index, e.index]));
-      actions();
+        : `${head} · Te falta ${t.label}${where}: ${clip(t.text, 80)}${more}`;
+      act("Ir a lo que falta", "mentor.guide.goTo", [cur.index, e.index]);
+      stepActions();
     } else {
-      out.push(lens(`${head} · ${clip(cur.step.title, 60)} · no veo TODO pendientes: si compila, pulsa «¿Cumple el paso?»`, "", [], from));
-      actions();
+      // Sin TODO pendientes. Lo que falta puede estar en otro archivo del paso (borrar algo y luego quien lo usa).
+      const open = here.find((e) => !e.status.complete);
+      const elsewhere = cur.edits.find((e) => !here.includes(e) && !e.status.complete);
+      text = !open && elsewhere
+        ? `${head} · aquí ya está · falta en ${elsewhere.edit.fileName}`
+        : `${head} · ${clip(cur.step.title, 60)} · no veo TODO pendientes: si compila, pulsa «¿Cumple el paso?»`;
+      if (elsewhere) missing = `en ${elsewhere.edit.fileName}`;
+      if (open) act("Ir al código", "mentor.guide.goTo", [cur.index, open.index]);
+      if (elsewhere) act(`Ir a ${elsewhere.edit.fileName} ›`, "mentor.guide.goTo", [cur.index, elsewhere.index]);
+      stepActions();
+    }
+    return { level, head, text, missing, tooltip: this.tooltip(v), actions };
+  }
+
+  /** Al pasar el ratón: de dónde salió el plan, el paso completo, cada TODO con su estado y cómo verificarlo. */
+  private tooltip(v: View): string {
+    const cur = v.current;
+    const marks: Record<Mark["state"], string> = { DONE: "✓", PENDING: "✗ sigue escrito", MISSING: "✗ falta", UNKNOWN: "?" };
+    const lines = [`${v.source.kind} · «${clip(v.source.title, 60)}»`, cur.step.label];
+    for (const e of cur.edits) for (const t of e.status.todos) lines.push(`${marks[t.state]} ${t.label} (${e.edit.fileName}): ${clip(t.text, 100)}`);
+    if (cur.step.verify) lines.push(`Cómo verificarlo: ${clip(cur.step.verify, 200)}`);
+    return lines.join("\n");
+  }
+
+  /** Desde la barra de estado: las acciones de la barra en un menú. */
+  async menu() {
+    const doc = vscode.window.activeTextEditor?.document;
+    const b = this.banner(doc);
+    if (!b) return void vscode.window.showInformationMessage("Enciende el Mentor en un archivo del plan para ver en qué paso vas.");
+    const pick = await vscode.window.showQuickPick(
+      b.actions.filter((a) => a.command).map((a) => ({ label: a.label, detail: a.tooltip, a })),
+      { title: b.text, placeHolder: b.head },
+    );
+    if (pick) await vscode.commands.executeCommand(pick.a.command, ...pick.a.args);
+  }
+
+  // ---------- CodeLens: la barra arriba del archivo y lo que falta sobre su línea ----------
+
+  provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
+    const b = this.banner(doc);
+    if (!b) return [];
+    const top = new vscode.Range(0, 0, 0, 0);
+    const icon = b.level === "ok" ? "$(pass-filled)" : b.level === "warn" ? "$(warning)" : "$(mortar-board)";
+    const out = [new vscode.CodeLens(top, { title: `${icon} ${b.text}`, command: "", tooltip: b.tooltip })];
+    for (const a of b.actions) out.push(new vscode.CodeLens(top, { title: a.label, command: a.command, arguments: a.args, tooltip: a.tooltip }));
+    // Lo que falta, sobre su propia línea (en Android Studio va en un bloque bajo la línea).
+    for (const n of this.notes(doc)) {
+      const at = new vscode.Range(n.line, 0, n.line, 0);
+      out.push(new vscode.CodeLens(at, { title: noteTitle(n.kind, n.label, n.message), command: "", tooltip: `${n.label}: ${n.message}` }));
     }
     return out;
   }
 
-  // ---------- marcas en el código ----------
+  /** Tras «¿Cumple el paso?»: lo que falta, la confirmación o la respuesta que ya quedó vieja, en las líneas de este archivo. */
+  private notes(doc: vscode.TextDocument): StepNote[] {
+    const v = this.view(doc);
+    const cur = v?.current;
+    if (!cur || !this.checked.has(cur.step.id)) return [];
+    const here = cur.edits.filter((e) => samePath(e.edit.path, doc.uri.fsPath));
+    const out: StepNote[] = [];
+    const clamp = (l: number) => Math.min(Math.max(l, 0), doc.lineCount - 1);
+    // Si el Mentor vio tu código actual y dice que cumple, su respuesta manda sobre la comprobación gratis.
+    if (!cur.verdict?.ok) for (const e of here) for (const t of e.status.todos) {
+      if (!t.missing || t.line === null) continue;
+      out.push(t.state === "PENDING"
+        ? { line: clamp(t.line), kind: "error", label: `${t.label} sigue escrito`, message: `${t.text} · Cuando lo completes, borra el comentario TODO.` }
+        : { line: clamp(t.line), kind: "error", label: `Falta · ${t.label}`, message: t.text });
+    }
+    const name = path.basename(doc.uri.fsPath);
+    const fallback = clamp(here[0]?.status.cursorLine ?? 0);
+    const verdict = cur.verdict ?? cur.staleVerdict;
+    const stale = !cur.verdict;
+    if (verdict?.ok && here.length) {
+      out.push({ line: fallback, kind: stale ? "stale" : "bien", label: stale ? "Mentor (antes de tus cambios)" : "Mentor", message: `Tu código cumple el ${cur.step.label}.` });
+    } else if (verdict) for (const g of verdict.gaps.filter((g) => !g.file || g.file === name)) {
+      const line = g.line ? clamp(g.line - 1) : fallback;
+      if (!out.some((n) => n.line === line)) out.push({ line, kind: stale ? "stale" : "error", label: stale ? "Falta (Mentor, antes de tus cambios)" : "Falta (Mentor)", message: g.text });
+    }
+    return out;
+  }
 
-  /** Tras «¿Cumple el paso?»: lo que falta en rojo y la confirmación en verde, sobre su línea. */
+  /** Marca las líneas de las notas con su color (el texto de cada nota va en su CodeLens). */
   paint() {
     for (const ed of vscode.window.visibleTextEditors) {
-      const v = this.view(ed.document);
-      const red: vscode.DecorationOptions[] = [];
-      const green: vscode.DecorationOptions[] = [];
-      const grey: vscode.DecorationOptions[] = [];
-      const cur = v?.current;
-      if (cur && this.checked.has(cur.step.id)) {
-        const here = cur.edits.filter((e) => e.edit.path === ed.document.uri.fsPath);
-        const at = (line: number, text: string): vscode.DecorationOptions => {
-          const l = Math.min(Math.max(line, 0), ed.document.lineCount - 1);
-          return { range: new vscode.Range(l, 0, l, 0), renderOptions: { after: { contentText: text } }, hoverMessage: text };
-        };
-        // Si el Mentor vio tu código actual y dice que cumple, su respuesta manda sobre la comprobación gratis.
-        if (!cur.verdict?.ok) for (const e of here) for (const t of e.status.todos) {
-          if (!t.missing || t.line === null) continue;
-          red.push(at(t.line, t.state === "PENDING" ? `◀ ${t.label} sigue escrito · cuando lo completes, borra el comentario` : `◀ Falta · ${t.label}: ${t.text}`));
-        }
-        const name = path.basename(ed.document.uri.fsPath);
-        const fallback = here[0]?.status.cursorLine ?? 0;
-        const verdict = cur.verdict ?? cur.staleVerdict;
-        if (verdict?.ok && here.length) (cur.verdict ? green : grey).push(at(fallback, `✓ Mentor: tu código cumple el ${cur.step.label}`));
-        else if (verdict) for (const g of verdict.gaps.filter((g) => !g.file || g.file === name)) {
-          const line = g.line ? g.line - 1 : fallback;
-          if (!red.some((r) => r.range.start.line === line)) (cur.verdict ? red : grey).push(at(line, `◀ Falta (Mentor): ${g.text}`));
-        }
+      const notes = this.notes(ed.document);
+      for (const [kind, style] of this.lineStyles) {
+        ed.setDecorations(style, notes.filter((n) => n.kind === kind).map((n) => ({
+          range: new vscode.Range(n.line, 0, n.line, 0),
+          hoverMessage: new vscode.MarkdownString(`**${n.label}** · ${n.message}`),
+        })));
       }
-      ed.setDecorations(this.missing, red);
-      ed.setDecorations(this.confirmed, green);
-      ed.setDecorations(this.stale, grey);
     }
   }
 
@@ -263,14 +359,24 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
     await this.goToLine(e.edit.path, e.status.cursorLine ?? Math.max(e.edit.line - 1, 0));
   }
 
+  /**
+   * Abre el archivo en la línea (0-based). Si el Mentor estaba apagado en ese archivo, lo enciende: así la barra del
+   * paso y lo que falta te acompañan allá (como en Android Studio). Si el archivo no existe, lo busca por su nombre.
+   */
   async goToLine(file: string, line: number) {
-    const doc = await vscode.workspace.openTextDocument(file).then(undefined, () => null);
-    if (!doc) return void vscode.window.showWarningMessage(`No encontré ${path.basename(file)} en el proyecto.`);
+    let doc = await vscode.workspace.openTextDocument(file).then(undefined, () => null);
+    if (!doc) {
+      const found = await vscode.workspace.findFiles(`**/${path.basename(file)}`, NOT_SOURCE, 2).then(undefined, () => []);
+      if (found.length === 1) doc = await vscode.workspace.openTextDocument(found[0]).then(undefined, () => null);
+    }
+    if (!doc) return void vscode.window.showWarningMessage(`No encontré ${path.basename(file)} en el proyecto. Revisa que la carpeta abierta sea la raíz del proyecto.`);
     const ed = await vscode.window.showTextDocument(doc);
     const l = Math.min(Math.max(line, 0), doc.lineCount - 1);
     const col = doc.lineAt(l).firstNonWhitespaceCharacterIndex;
     ed.selection = new vscode.Selection(l, col, l, col);
     ed.revealRange(new vscode.Range(l, 0, l, 0), vscode.TextEditorRevealType.InCenter);
+    if (!this.mentor.isOn(doc)) await this.mentor.toggle(doc);
+    this.refreshSoon();
   }
 
   /** Pone el esqueleto del cambio (solo los TODO, nunca una solución). Se deshace con ⌘Z. */
@@ -299,11 +405,7 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
     this.viewedId = next.id;
     const nv = this.stepView(c.v.source, c.v.steps, stepIndex);
     const target = nv.edits.find((e) => !e.status.complete) ?? nv.edits[0];
-    if (target) {
-      const doc = await vscode.workspace.openTextDocument(target.edit.path).then(undefined, () => null);
-      if (doc && !this.mentor.isOn(doc)) await this.mentor.toggle(doc);
-      await this.goTo(stepIndex, target.index);
-    }
+    if (target) await this.goToLine(target.edit.path, target.status.cursorLine ?? Math.max(target.edit.line - 1, 0));
     this.refreshSoon();
   }
 
@@ -314,14 +416,18 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
     this.refreshSoon();
   }
 
-  /** «Explícame este paso»: qué lograr en cada TODO y por qué, sin darte el código. Responde en el panel. */
+  /**
+   * «Explícame este paso»: qué lograr en cada TODO y por qué, sin darte el código. Le dice cómo vas (qué ya está y qué
+   * falta, con archivo y línea) para que se centre en lo que falta. Responde en el panel.
+   */
   async explain(stepIndex: number) {
     const c = this.current();
     if (!c) return;
-    const step = c.v.steps[stepIndex];
-    const todos = step.edits.flatMap((e) => e.todos).map((t) => `${t.label}: ${t.text}`).join("; ");
+    const sv = this.stepView(c.v.source, c.v.steps, stepIndex);
+    const statuses = JSON.stringify(sv.edits.map((e) => e.status));
+    const request: string = core.raw.explainRequest(c.v.source.markdown, this.mentor.root, stepIndex, statuses);
     void vscode.commands.executeCommand("mentor.openPanel");
-    await this.mentor.ask(c.doc, `Explícame el ${step.label}: qué tengo que lograr` + (todos ? ` en cada TODO (${todos})` : "") + " y por qué, punto por punto, sin darme el código.");
+    await this.mentor.ask(c.doc, request);
   }
 
   /** «¿Cumple el paso?»: el Mentor compara tu código con el paso, con el plan de la otra IA como contexto. */
@@ -363,9 +469,4 @@ export class Guide implements vscode.CodeLensProvider, vscode.Disposable {
     clearTimeout(this.timer);
     this.disposables.forEach((d) => d.dispose());
   }
-}
-
-function clip(s: string, max: number): string {
-  const t = s.replace(/`/g, "").replace(/\s+/g, " ").trim();
-  return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }

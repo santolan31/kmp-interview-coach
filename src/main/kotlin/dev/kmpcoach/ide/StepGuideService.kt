@@ -31,6 +31,7 @@ import dev.kmpcoach.core.StepVerdict
 import dev.kmpcoach.core.UsageKind
 import dev.kmpcoach.core.TodoState
 import dev.kmpcoach.core.completeFull
+import dev.kmpcoach.core.nfc
 import com.intellij.openapi.fileEditor.FileEditor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -159,7 +160,7 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         val src = sources[file.name]?.value ?: return null
         val step = steps(src).firstOrNull { it.id == viewedId } ?: return null
         if (step.id !in checked) return null
-        val edits = step.edits.filter { it.path == file.path }
+        val edits = step.edits.filter { it.path == nfc(file.path) }
         if (edits.isEmpty()) return null
         val lines = linesOf(file.path, file)
         val set = HashSet<Int>()
@@ -177,10 +178,10 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         val steps = steps(src)
         val idx = steps.indexOfFirst { it.id == viewedId }.takeIf { it >= 0 } ?: return emptyList()
         val step = steps[idx]
-        if (step.id !in checked || step.edits.none { it.path == file.path }) return emptyList()
+        if (step.id !in checked || step.edits.none { it.path == nfc(file.path) }) return emptyList()
         val lines = HashMap<String, List<String>>()
         val sv = stepView(steps, idx, lines)
-        val here = sv.edits.filter { it.edit.path == file.path }
+        val here = sv.edits.filter { it.edit.path == nfc(file.path) }
         val out = ArrayList<Marker>()
         val stored = verdicts[step.id]
         val stale = stored != null && stored.first != fingerprint(step, lines)
@@ -298,6 +299,9 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     /** Abre el archivo del cambio y deja el cursor en lo primero que falta (o donde va el código). */
     fun goTo(ev: EditView) {
         val vf = ev.file ?: return notify("No encontré ${ev.edit.fileName} en el proyecto.")
+        // El paso sigue en otro archivo: allí también se enciende el tutor, para que la barra y las marcas te acompañen.
+        val tutor = TutorService.getInstance(project)
+        if (!tutor.isTutorOn(vf)) tutor.setTutorOn(vf, true, withFirstHelp = false)
         goToLine(vf, ev.status.cursorLine ?: (ev.edit.line - 1).coerceAtLeast(0))
     }
 
@@ -351,12 +355,16 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
         refresh()
     }
 
-    /** «Explícame este paso»: el tutor explica qué lograr en cada TODO y por qué, sin darte el código. Responde en el panel. */
+    /**
+     * «Explícame este paso»: el tutor explica qué lograr en cada TODO y por qué, sin darte el código. Le dice cómo vas
+     * (qué ya está y qué falta, con archivo y línea) para que se centre en lo que falta. Responde en el panel.
+     */
     fun explain(step: GuideStep, file: VirtualFile) {
-        val todos = step.edits.flatMap { it.todos }.joinToString("; ") { "${it.first}: ${it.second}" }
-        TutorService.getInstance(project).ask(file,
-            "Explícame el ${step.label}: qué tengo que lograr" + (if (todos.isNotEmpty()) " en cada TODO ($todos)" else "") +
-                " y por qué, punto por punto, sin darme el código.")
+        val statuses = step.edits.map { e ->
+            val vf = vfOf(e.path)
+            StepMatcher.status(linesOf(e.path, vf), e, hasErrors(vf), e.key in seenPlaced)
+        }
+        TutorService.getInstance(project).ask(file, StepPrompts.explainRequest(step, statuses))
     }
 
     /** «¿Cumple el paso?»: el tutor compara tu código con el paso. Una llamada corta; la respuesta aparece en la barra. */
