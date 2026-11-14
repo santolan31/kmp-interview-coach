@@ -49,6 +49,8 @@ data class AiConfig(
     val model: String,
     val apiKey: String?,
     val timeoutSeconds: Long = 90,
+    /** Cuánto piensa el modelo: un nivel de [Effort.LEVELS], o vacío para el valor por defecto del modelo. */
+    val effort: String = "",
 )
 
 data class ChatMessage(val role: String, val content: String)
@@ -110,6 +112,12 @@ interface AiClient {
 
     /** Saldo restante, o null si el proveedor no lo expone (Anthropic, OpenAI, Gemini y Groq no lo hacen con una clave de API normal). */
     suspend fun balance(): AccountBalance? = null
+
+    /**
+     * Niveles de esfuerzo que acepta el modelo configurado, si el proveedor lo dice de antemano (solo OpenRouter).
+     * Null = no se sabe (se usan los de [Effort.levels]); vacía = el modelo no permite elegir esfuerzo.
+     */
+    suspend fun effortLevels(): List<String>? = null
 }
 
 /** Respuesta HTTP mínima que necesitan los clientes de IA. Las cabeceras van con el nombre en minúsculas. */
@@ -160,6 +168,51 @@ object AiClients {
     }
 
     internal fun join(base: String, path: String) = base.trimEnd('/') + path
+
+    /**
+     * Cuerpo de `POST /v1/messages`. En los modelos que piensan, el pensamiento cuenta dentro de `max_tokens`: se le suma
+     * [Effort.thinkingRoom] para que no corte la respuesta. El esfuerzo solo se envía si lo elegiste.
+     */
+    internal fun anthropicBody(cfg: AiConfig, system: String, messages: List<ChatMessage>, maxTokens: Int): Map<String, Any?> = buildMap {
+        val effort = Effort.forPreset(cfg.preset, cfg.effort)
+        put("model", cfg.model)
+        put("max_tokens", maxTokens + Effort.thinkingRoom(effort))
+        put("system", system)
+        put("messages", messages.map { mapOf("role" to it.role, "content" to it.content) })
+        if (effort.isNotEmpty()) put("output_config", mapOf("effort" to effort))
+    }
+
+    /**
+     * Cuerpo de `POST /chat/completions`. Sin max_tokens ni temperature: cada proveedor compatible acepta nombres distintos
+     * y algunos modelos rechazan valores no por defecto. El esfuerzo va como `reasoning_effort`, salvo en OpenRouter
+     * (`reasoning: {effort}`), y solo si lo elegiste.
+     */
+    internal fun openAiBody(cfg: AiConfig, system: String, messages: List<ChatMessage>): Map<String, Any?> = buildMap {
+        put("model", cfg.model)
+        put("messages", listOf(mapOf("role" to "system", "content" to system)) + messages.map { mapOf("role" to it.role, "content" to it.content) })
+        val effort = Effort.forPreset(cfg.preset, cfg.effort)
+        if (effort.isNotEmpty()) when (Effort.wireOf(cfg.preset)) {
+            Effort.Wire.OPENROUTER -> put("reasoning", mapOf("effort" to effort))
+            Effort.Wire.REASONING_EFFORT -> put("reasoning_effort", effort)
+            else -> {}
+        }
+    }
+
+    /**
+     * Llama con el esfuerzo elegido. Si el modelo lo rechaza (un 400 que habla del esfuerzo o del razonamiento), lo anota
+     * con [Effort.markRejected] para avisarte en el panel y repite la pregunta sin esfuerzo: nunca te quedas sin respuesta.
+     */
+    internal suspend fun <T> withEffortFallback(cfg: AiConfig, call: suspend (AiConfig) -> T): T {
+        val effort = Effort.forPreset(cfg.preset, cfg.effort)
+        if (effort.isEmpty()) return call(cfg)
+        return try {
+            call(cfg)
+        } catch (e: AiException) {
+            if (!Effort.looksRejected(e)) throw e
+            Effort.markRejected(cfg.preset, cfg.model, effort)
+            call(cfg.copy(effort = ""))
+        }
+    }
 
     /** Página donde el usuario ve su saldo y consumo real. */
     fun billingUrl(preset: ProviderPreset): String? = when (preset) {
@@ -242,13 +295,11 @@ private class AnthropicClient(private val cfg: AiConfig, private val http: HttpT
     private suspend fun send(method: String, path: String, body: String? = null) =
         http.send(method, AiClients.join(cfg.baseUrl, path), headers, body, cfg.timeoutSeconds)
 
-    override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply {
-        val body = Json.write(mapOf(
-            "model" to cfg.model,
-            "max_tokens" to maxTokens,
-            "system" to system,
-            "messages" to messages.map { mapOf("role" to it.role, "content" to it.content) },
-        ))
+    override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply =
+        AiClients.withEffortFallback(cfg) { c -> completeWith(c, system, messages, maxTokens) }
+
+    private suspend fun completeWith(c: AiConfig, system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply {
+        val body = Json.write(AiClients.anthropicBody(c, system, messages, maxTokens))
         val resp = send("POST", "/v1/messages", body)
         val root = Json.parse(AiClients.check(resp, cfg.preset)).asMap()
         val text = root["content"].asList().mapNotNull { it.asMap().takeIf { b -> b["type"] == "text" }?.str("text") }.joinToString("")
@@ -272,12 +323,18 @@ private class OpenAiCompatibleClient(private val cfg: AiConfig, private val http
     private suspend fun send(method: String, path: String, body: String? = null) =
         http.send(method, AiClients.join(cfg.baseUrl, path), headers, body, cfg.timeoutSeconds)
 
-    override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply {
-        // Sin max_tokens ni temperature: cada proveedor compatible acepta nombres distintos y algunos modelos rechazan valores no por defecto.
-        val body = Json.write(mapOf(
-            "model" to cfg.model,
-            "messages" to listOf(mapOf("role" to "system", "content" to system)) + messages.map { mapOf("role" to it.role, "content" to it.content) },
-        ))
+    override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply =
+        AiClients.withEffortFallback(cfg) { c -> completeWith(c, system, messages) }
+
+    /** Solo OpenRouter dice qué niveles acepta cada modelo (en `GET /models`); los demás no lo exponen. */
+    override suspend fun effortLevels(): List<String>? {
+        if (cfg.preset != ProviderPreset.OPENROUTER) return null
+        val data = Json.parse(AiClients.check(send("GET", "/models"), cfg.preset)).asMap()["data"].asList().map { it.asMap() }
+        return Effort.openRouterLevels(data, cfg.model)
+    }
+
+    private suspend fun completeWith(c: AiConfig, system: String, messages: List<ChatMessage>): AiReply {
+        val body = Json.write(AiClients.openAiBody(c, system, messages))
         val resp = send("POST", "/chat/completions", body)
         val root = Json.parse(AiClients.check(resp, cfg.preset)).asMap()
         val choice = root["choices"].asList().firstOrNull().asMap()

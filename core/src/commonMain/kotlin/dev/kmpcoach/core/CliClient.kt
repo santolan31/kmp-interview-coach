@@ -75,12 +75,15 @@ object CliProtocol {
         }.trim()
     }
 
-    fun call(tool: CliTool, exe: String, model: String, system: String, messages: List<ChatMessage>): Call {
+    fun call(tool: CliTool, exe: String, model: String, system: String, messages: List<ChatMessage>, effort: String = ""): Call {
         val m = model.trim()
+        // Cursor no tiene opción de esfuerzo: solo Claude Code lo recibe.
+        val e = if (tool == CliTool.CLAUDE) Effort.forPreset(ProviderPreset.CLAUDE_CLI, effort) else ""
         return when (tool) {
             CliTool.CLAUDE -> Call(
                 listOf(exe, "-p", "--output-format", "json", "--no-session-persistence", "--system-prompt-file", SYSTEM_FILE,
-                    "--disallowed-tools", CLAUDE_NO_TOOLS.joinToString(",")) + (if (m.isNotEmpty()) listOf("--model", m) else emptyList()),
+                    "--disallowed-tools", CLAUDE_NO_TOOLS.joinToString(",")) + (if (m.isNotEmpty()) listOf("--model", m) else emptyList()) +
+                    (if (e.isNotEmpty()) listOf("--effort", e) else emptyList()),
                 transcript(messages),
                 mapOf(SYSTEM_FILE to system),
             )
@@ -144,7 +147,7 @@ class CliClient(
 
     // El modelo «ignora» maxTokens: los CLI no lo exponen. completeFull solo reintenta si el CLI avisa de un corte.
     override suspend fun complete(system: String, messages: List<ChatMessage>, maxTokens: Int): AiReply {
-        val call = CliProtocol.call(tool, exe(), cfg.model, system, messages)
+        val call = CliProtocol.call(tool, exe(), cfg.model, system, messages, cfg.effort)
         val r = runner.run(call.args, call.stdin, call.files, cfg.timeoutSeconds.coerceAtLeast(CLI_TIMEOUT))
         return CliProtocol.parse(tool, r)
     }

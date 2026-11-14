@@ -239,8 +239,36 @@ class AiSessionContext(private val project: Project) {
         // Un plan de Antigravity se traduce al formato de la guía: cada archivo que cambia es un paso.
         antigravityFirst(fileName, claude)?.let { p -> return StepsSource(p.file, AntigravityPlans.toSteps(p.text), iso(p.modified)) }
         val (f, _) = claude ?: return null
-        val turn = turns(f).lastOrNull { it.role == "assistant" && StepParser.hasSteps(it.text) } ?: return null
+        // Con el formato «## Paso N» o, si la IA respondió a su manera («1. Crea…» con código), con pasos que cambian archivos
+        // de este proyecto. Se busca desde el final: solo se leen los mensajes hasta encontrar uno.
+        // Si la conversación ya usa «## Paso N», solo cuenta ese formato: una revisión posterior con lista y código no
+        // reemplaza al plan.
+        val all = turns(f)
+        val strict = all.any { it.role == "assistant" && StepParser.hasSteps(it.text) }
+        val turn = all.lastOrNull { it.role == "assistant" && if (strict) StepParser.hasSteps(it.text) else isGuide(it) } ?: return null
         return StepsSource(f, turn.text, turn.at)
+    }
+
+    /** Ubica los archivos que la IA nombró sin ruta, para reconocer las guías sin el formato del proyecto. */
+    private val finder by lazy { ProjectFileFinder(project) }
+
+    /**
+     * Si cada mensaje es una guía y cuándo se comprobó, para no analizarlo en cada búsqueda (cada 10 s). Un «no» se
+     * vuelve a comprobar al minuto, por si creaste los archivos que nombra. No se guarda mientras el IDE indexa.
+     */
+    private val guideCache = ConcurrentHashMap<String, Pair<Boolean, Long>>()
+
+    private fun isGuide(t: SessionTurn): Boolean {
+        if (StepParser.hasSteps(t.text)) return true
+        val key = "${t.at}#${t.text.length}#${t.text.hashCode()}"
+        val now = System.currentTimeMillis()
+        guideCache[key]?.let { (yes, at) -> if (yes || now - at < 60_000) return yes }
+        val result = StepParser.isGuide(t.text, project.basePath, finder)
+        if (!finder.isIndexing()) {
+            if (guideCache.size > 5_000) guideCache.clear()
+            guideCache[key] = result to now
+        }
+        return result
     }
 
     /** Para el panel: lo último calculado para ese archivo, y lo recalcula en segundo plano sin bloquear la interfaz. */

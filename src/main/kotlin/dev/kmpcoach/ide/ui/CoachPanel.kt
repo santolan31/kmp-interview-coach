@@ -55,6 +55,7 @@ import dev.kmpcoach.core.Analysis
 import dev.kmpcoach.core.Analyzer
 import dev.kmpcoach.core.Challenge
 import dev.kmpcoach.core.CommentType
+import dev.kmpcoach.core.Effort
 import dev.kmpcoach.core.FileGuess
 import dev.kmpcoach.core.HintLevel
 import dev.kmpcoach.core.Level
@@ -163,6 +164,11 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
     private val giveUpLink = ActionLink("Me rindo") { currentKotlin()?.let(::giveUpDialog) }
     private val sendButton = JButton("Enviar")
     private val modelLink = ActionLink("") { chooseModel() }
+    /** Cuánto razona la IA. Se oculta con los proveedores que no permiten elegirlo (Cursor y Copilot). */
+    private val effortLink = ActionLink("") { chooseEffort() }
+    /** Niveles que OpenRouter dice que acepta cada modelo, por «proveedor/modelo» (vacío = el modelo no razona). */
+    private val effortLevels = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val loadingLevels: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** Si el Mentor está conectado con la IA elegida, siempre a la vista junto al modelo. */
     private val connLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
     private val connLink = ActionLink("Probar") { ConnectionStatus.getInstance().test(project) }
@@ -338,6 +344,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             isOpaque = false
             border = JBUI.Borders.emptyTop(4)
             add(modelLink)
+            add(effortLink)
             add(connLabel)
             add(connLink)
         }
@@ -454,7 +461,84 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
         settings.state.model = model
         modelLink.text = settings.modelLabel() + " ▾"
         modelLink.icon = BrandIcons.ofProvider(settings.preset.id)
+        syncEffort()
         scheduleRefresh()
+    }
+
+    /**
+     * Texto del esfuerzo y si se muestra. Se oculta con los proveedores que no permiten elegirlo (Cursor, Copilot), y se
+     * deshabilita si OpenRouter dice que el modelo no razona: nunca un control que no hace nada.
+     */
+    private fun syncEffort() {
+        val preset = settings.preset
+        effortLink.isVisible = Effort.supported(preset)
+        if (!effortLink.isVisible) return
+        val model = settings.currentModel()
+        if (preset == ProviderPreset.OPENROUTER) loadOpenRouterLevels(model)
+        val known = effortLevels["${preset.id}/$model"]
+        val e = settings.effort()
+        when {
+            known != null && known.isEmpty() -> {
+                effortLink.isEnabled = false
+                effortLink.text = "· este modelo no permite elegir esfuerzo"
+                effortLink.toolTipText = "Según OpenRouter, $model no razona: no hay esfuerzo que elegir."
+            }
+            Effort.isRejected(preset, model, e) -> {
+                effortLink.isEnabled = true
+                effortLink.text = "· " + settings.effortLabel() + " ▾"
+                effortLink.toolTipText = "$model rechazó el esfuerzo «$e», así que el Mentor respondió con el predeterminado. " +
+                    "Pulsa para elegir otro nivel."
+            }
+            else -> {
+                effortLink.isEnabled = true
+                effortLink.text = "· " + settings.effortLabel() + " ▾"
+                effortLink.toolTipText = "Cuánto razona la IA antes de responder. Más esfuerzo: mejores respuestas en problemas " +
+                    "difíciles, pero más lentas y caras. Pulsa para cambiarlo."
+            }
+        }
+    }
+
+    /**
+     * Pregunta a OpenRouter, fuera del hilo de la interfaz, qué niveles acepta el modelo. Una sola vez por modelo en cada
+     * sesión del IDE, aunque falle: el panel se refresca a menudo y no debe repetir la consulta cada vez.
+     */
+    private fun loadOpenRouterLevels(model: String) {
+        val key = "${ProviderPreset.OPENROUTER.id}/$model"
+        if (!loadingLevels.add(key)) return
+        val app = ApplicationManager.getApplication()
+        app.executeOnPooledThread {
+            val client = runCatching { settings.createClient().first }.getOrNull() ?: return@executeOnPooledThread
+            futureOf { client.effortLevels() }.whenComplete { levels, _ ->
+                // Si falló o el modelo no está en la lista, no se sabe: se ofrecen todos los niveles.
+                if (levels != null) effortLevels[key] = levels
+                app.invokeLater { if (!project.isDisposed) syncEffort() }
+            }
+        }
+    }
+
+    /** Lista para elegir el esfuerzo; la elección se guarda en los ajustes y se usa desde la siguiente pregunta. */
+    private fun chooseEffort() {
+        val preset = settings.preset
+        val model = settings.currentModel()
+        val current = settings.effort()
+        val default = Effort.defaultFor(preset, model)
+        val levels = effortLevels["${preset.id}/$model"]?.takeIf { it.isNotEmpty() } ?: Effort.levels(preset)
+        val mark = "✓ "
+        val items = listOf(("Predeterminado del modelo" + (default?.let { " ($it)" } ?: "")) to "") +
+            levels.map { "$it — ${Effort.describe(it)}" to it }
+        val shownItems = items.map { (text, level) -> if (level == current) mark + text else text }
+        val note = if (preset == ProviderPreset.OPENROUTER && effortLevels.containsKey("${preset.id}/$model")) "" else " (cada modelo acepta solo algunos)"
+        JBPopupFactory.getInstance().createPopupChooserBuilder(shownItems)
+            .setTitle("Esfuerzo de ${preset.label}$note")
+            .setItemChosenCallback { choice ->
+                val level = items.firstOrNull { it.first == choice.removePrefix(mark) }?.second ?: return@setItemChosenCallback
+                settings.state.effort = level
+                Effort.clearRejected(preset, model)
+                syncEffort()
+                scheduleRefresh()
+            }
+            .createPopup()
+            .showUnderneathOf(effortLink)
     }
 
     private fun reviewNow() {
@@ -589,6 +673,7 @@ class CoachPanel(private val project: Project) : SimpleToolWindowPanel(true, tru
             modelLink.text = settings.modelLabel() + " ▾"
             modelLink.icon = BrandIcons.ofProvider(settings.preset.id)
         }
+        syncEffort()
     }
 
     private fun statusText(file: VirtualFile?): String {

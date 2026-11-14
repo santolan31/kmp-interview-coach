@@ -270,6 +270,7 @@ object MentorApi {
             baseUrl = m.str("baseUrl")?.trim().takeUnless { it.isNullOrEmpty() } ?: p.baseUrl,
             model = m.str("model")?.trim().takeUnless { it.isNullOrEmpty() } ?: p.defaultModel,
             apiKey = m.str("apiKey")?.trim()?.takeIf { it.isNotEmpty() },
+            effort = Effort.forPreset(p, m.str("effort")),
         )
     }
 

@@ -17,7 +17,13 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.EditorNotifications
+import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.wm.ToolWindowManager
 import dev.kmpcoach.core.AiClients
+import dev.kmpcoach.core.ClaudeSessions
+import dev.kmpcoach.core.SourceKind
+import java.awt.datatransfer.StringSelection
 import dev.kmpcoach.core.ChatMessage
 import dev.kmpcoach.core.CommentType
 import dev.kmpcoach.core.EditStatus
@@ -232,13 +238,18 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
 
     private fun steps(src: AiSessionContext.StepsSource): List<GuideStep> {
         val key = src.file.path + "#" + src.at
-        if (key != parsedKey) {
-            parsed = StepParser.parse(src.text, project.basePath)
-            parsedKey = key
-            viewedId = null
+        // Si se leyó mientras el IDE indexaba, los archivos nombrados sin ruta no se pudieron ubicar: se lee otra vez al terminar.
+        val incomplete = parsedKey == "$key#indexando" && !finder.isIndexing()
+        if (parsedKey?.removeSuffix("#indexando") != key || incomplete) {
+            parsed = StepParser.parse(src.text, project.basePath, finder)
+            if (!incomplete) viewedId = null
+            parsedKey = if (finder.isIndexing()) "$key#indexando" else key
         }
         return parsed
     }
+
+    /** Ubica los archivos que la IA nombró sin ruta, en la guía flexible. */
+    private val finder = ProjectFileFinder(project)
 
     private fun vfOf(path: String): VirtualFile? = LocalFileSystem.getInstance().findFileByPath(path)
 
@@ -353,6 +364,44 @@ class StepGuideService(private val project: Project, private val cs: CoroutineSc
     fun markDone(step: GuideStep) {
         manualDone += step.id
         refresh()
+    }
+
+    /**
+     * «Continuar al chat», al terminar la guía: copia el mensaje «Revisa: terminé los pasos…» para la IA que dio el
+     * plan (sea cual sea), abre su chat si está en el IDE y te dice en qué conversación pegarlo. No lo envía solo:
+     * ningún chat de IA deja que otro plugin escriba en él, y así el mensaje llega a tu conversación, la que conoce el plan.
+     */
+    fun notifyDone(file: VirtualFile, view: View) {
+        val src = sources[file.name]?.value ?: return
+        val lines = HashMap<String, List<String>>()
+        val confirmed = view.steps.indices.map { stepView(view.steps, it, lines) }.filter { it.verdict?.ok == true }.map { it.step.id }.toSet()
+        val message = StepPrompts.doneMessage(view.steps, confirmed, manualDone.toSet())
+        CopyPasteManager.getInstance().setContents(StringSelection(message))
+        val kind = SourceKind.ofPath(src.file.path)
+        val ctx = AiSessionContext.getInstance(project)
+        val title = if (kind == SourceKind.PASTED) null else runCatching { ClaudeSessions.requestBefore(ctx.turns(src.file), src.at) }.getOrNull()
+        val where = title?.let { " la conversación «$it»" } ?: " tu conversación del plan"
+        val paste = if (SystemInfo.isMac) "⌘V" else "Ctrl+V"
+        val opened = kind == SourceKind.CLAUDE_CODE && openChatWindow("claude")
+        // Dónde pegarlo: el chat de la IA que dio el plan, sea cual sea. Solo se nombra la IA para que sepas dónde está.
+        val chat = when {
+            opened -> "Abrí el chat: pégalo ($paste) en$where"
+            kind == SourceKind.COPILOT -> "Pégalo ($paste) en tu chat de VS Code, en$where"
+            kind == SourceKind.ANTIGRAVITY -> "Pégalo ($paste) en Antigravity, en$where"
+            kind == SourceKind.CLAUDE_CODE -> "Pégalo ($paste) en tu chat, en$where"
+            else -> "Pégalo ($paste) en el chat de la IA que te dio el plan"
+        }
+        notify("Copié un resumen de lo que hiciste. $chat: la IA valida si tu código quedó bien.")
+    }
+
+    /** Abre y enfoca la ventana del IDE cuyo id o título contiene [keyword] (por ejemplo, la de Claude Code). */
+    private fun openChatWindow(keyword: String): Boolean {
+        val twm = ToolWindowManager.getInstance(project)
+        val window = twm.toolWindowIds.mapNotNull(twm::getToolWindow).firstOrNull { tw ->
+            keyword in tw.id.lowercase() || keyword in tw.stripeTitle.lowercase()
+        } ?: return false
+        window.activate(null)
+        return true
     }
 
     /**

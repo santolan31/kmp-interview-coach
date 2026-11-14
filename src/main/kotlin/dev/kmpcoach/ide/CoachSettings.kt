@@ -13,6 +13,7 @@ import dev.kmpcoach.core.AiClient
 import dev.kmpcoach.core.AiClients
 import dev.kmpcoach.core.AiConfig
 import dev.kmpcoach.core.AiException
+import dev.kmpcoach.core.Effort
 import dev.kmpcoach.core.Level
 import dev.kmpcoach.core.ModelPrice
 import dev.kmpcoach.core.PromptOptions
@@ -27,6 +28,8 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
         var preset by string(ProviderPreset.ANTHROPIC.id)
         var baseUrl by string(ProviderPreset.ANTHROPIC.baseUrl)
         var model by string(ProviderPreset.ANTHROPIC.defaultModel)
+        /** Cuánto piensa el modelo (low … max). Vacío = el valor por defecto del modelo. Solo Anthropic y Claude Code. */
+        var effort by string("")
         var studentLevel by string(Level.JUNIOR.id)
         var language by string("es")
         /** Con el tutor encendido en un archivo: pausa al escribir antes de comprobar si estás atascado. */
@@ -62,7 +65,20 @@ class CoachSettings : SimplePersistentStateComponent<CoachSettings.Options>(Opti
             baseUrl = state.baseUrl?.trim().takeUnless { it.isNullOrEmpty() } ?: p.baseUrl,
             model = state.model?.trim().takeUnless { it.isNullOrEmpty() } ?: p.defaultModel,
             apiKey = CoachSecrets.get(p),
+            effort = Effort.forPreset(p, state.effort),
         )
+    }
+
+    /** Modelo en uso: el elegido o, si no hay, el del proveedor. */
+    fun currentModel(): String = state.model.orEmpty().ifBlank { preset.defaultModel }
+
+    /** Esfuerzo que se envía (vacío = el del modelo) con este proveedor. */
+    fun effort(): String = Effort.forPreset(preset, state.effort)
+
+    /** Texto del panel: el esfuerzo elegido, el predeterminado del modelo si se conoce, o el aviso de que el modelo lo rechazó. */
+    fun effortLabel(): String {
+        val e = effort()
+        return Effort.label(e, Effort.defaultFor(preset, currentModel()), Effort.isRejected(preset, currentModel(), e))
     }
 
     /** Crea el cliente de IA. Lee la clave del almacén seguro: llámalo fuera del hilo de UI. */

@@ -3,8 +3,12 @@ package dev.kmpcoach.core
 /** Una línea de un bloque ```diff: ' ' se queda igual, '+' entra, '-' sale. */
 data class DiffLine(val kind: Char, val text: String)
 
-/** Un cambio de un paso: el archivo, la línea que citó la IA y el diff que propuso. */
-data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>) {
+/**
+ * Un cambio de un paso: el archivo, la línea que citó la IA y el diff que propuso.
+ * [loose]: vino de un bloque de código normal (no un ```diff): todas sus líneas son código que debe quedar, sin saber
+ * qué reemplaza ni dónde va exactamente. Se comprueba de forma más flexible ([StepMatcher.status]).
+ */
+data class StepEdit(val path: String, val line: Int, val diff: List<DiffLine>, val loose: Boolean = false) {
     val fileName: String get() = path.substringAfterLast('/')
     /** El código como está antes del cambio (lo que se queda y lo que sale). */
     val before: List<String> get() = diff.filter { it.kind != '+' }.map { it.text }
@@ -109,17 +113,181 @@ data class GuideStep(val number: String, val title: String, val edits: List<Step
 }
 
 /**
- * Lee los pasos de un mensaje de la IA. Espera lo que piden las reglas del proyecto: un título «## Paso N» por paso y,
- * antes de cada bloque ```diff, un enlace al archivo con sus líneas (`[Archivo.kt:27-32](ruta#L27-L32)`).
+ * Lee los pasos de un mensaje de la IA, de dos formas:
+ * - Estricta: lo que piden las reglas del proyecto, un título «## Paso N» por paso y, antes de cada bloque ```diff, un
+ *   enlace al archivo con sus líneas (`[Archivo.kt:27-32](ruta#L27-L32)`). Si el mensaje tiene esos títulos, solo se usa esta.
+ * - Flexible ([parseLoose]): para quien no pide un formato y recibe «1. Crea… 2. En tu ViewModel…» con bloques de código.
  */
 object StepParser {
     private val HEADING = Regex("^#{2,4}\\s*(?:Paso|Step)\\s+(\\d+(?:\\.\\d+)*)\\s*[:.\\-–—]?\\s*(.*)$", RegexOption.IGNORE_CASE)
     private val LINK = Regex("\\[[^\\]]*\\]\\(((?:file://)?[^)#\\s]+\\.[A-Za-z]+)(?:#L(\\d+)(?:-L?(\\d+))?)?\\)")
     private val VERIFY = Regex("^\\W*\\**\\s*C[oó]mo verificarlo\\s*:?\\**\\s*:?\\s*(.*)$", RegexOption.IGNORE_CASE)
 
+    // Formatos flexibles, uno por mensaje (el primero que aparezca al menos dos veces):
+    /** «### 1. Crea la entidad» o «## 2) Conecta el ViewModel». */
+    private val NUM_HEADING = Regex("^#{1,4}\\s*(\\d+)[.)]\\s+(.+)$")
+    /** «Paso 1: …», «**Paso 1:** …» o «Step 2 - …» sin #. */
+    private val PLAIN_STEP = Regex("^\\*{0,2}(?:Paso|Step)\\s+(\\d+(?:\\.\\d+)*)\\s*[:.)\\-–—]?\\s*\\*{0,2}\\s*[:.)\\-–—]?\\s*(.*)$", RegexOption.IGNORE_CASE)
+    /** «1. Crea…» o «**2. En tu ViewModel…**» al inicio de la línea (sin sangría: no una sublista). */
+    private val LIST_STEP = Regex("^(?:\\*\\*)?(\\d+)[.)]\\s+(.+)$")
+    private const val CODE_EXT = "kt|kts|java|xml|swift|ts|tsx|js|jsx|py|gradle|toml"
+    /** Un archivo nombrado en el texto: «`HomeViewModel.kt`» o «feature/home/HomeViewModel.kt». */
+    private val FILE_MENTION = Regex("[\\w./-]*\\w\\.(?:$CODE_EXT)\\b")
+    /** Bloques que son código de la app (no comandos de terminal ni salidas). Vacío = sin lenguaje. */
+    private val CODE_LANGS = setOf("", "kotlin", "kt", "kts", "java", "xml", "swift", "ts", "typescript", "tsx", "js", "javascript", "jsx", "py", "python", "gradle", "groovy", "toml")
+
+    /** El mensaje usa el formato estricto («## Paso N»). */
     fun hasSteps(markdown: String): Boolean = markdown.lineSequence().any { HEADING.matches(it.trim()) }
 
-    fun parse(markdown: String, basePath: String?): List<GuideStep> {
+    /**
+     * El mensaje es una guía que el Mentor puede seguir: formato estricto, o pasos flexibles con código para algún archivo
+     * de este proyecto. [findFile]: ver [parse].
+     */
+    fun isGuide(markdown: String, basePath: String?, findFile: ((String) -> String?)? = null): Boolean =
+        hasSteps(markdown) || parseLoose(markdown, basePath, findFile).isNotEmpty()
+
+    /**
+     * Los pasos del mensaje. [findFile]: busca en el proyecto un archivo que la IA nombró sin ruta completa
+     * («`HomeViewModel.kt`») y devuelve su ruta, o null si no está o hay varios con ese nombre. Sin él, esos nombres no
+     * se pueden ubicar y el paso queda sin código.
+     */
+    fun parse(markdown: String, basePath: String?, findFile: ((String) -> String?)? = null): List<GuideStep> =
+        if (hasSteps(markdown)) parseStrict(markdown, basePath) else parseLoose(markdown, basePath, findFile)
+
+    /**
+     * Pasos de una respuesta sin el formato del proyecto. Para no confundir cualquier explicación con una guía, solo vale
+     * si hay al menos dos pasos y algún bloque de código para un archivo de este proyecto ([basePath]). El archivo de un
+     * bloque sale, en este orden, de su encabezado («```kotlin title="X.kt"»), de su primera línea («// X.kt»), de un
+     * enlace o del último archivo nombrado en el paso. Un bloque normal es código que debe quedar ([StepEdit.loose]); un
+     * ```diff se lee como en el formato estricto. Los cambios fuera del proyecto se descartan.
+     */
+    fun parseLoose(markdown: String, basePath: String?, findFile: ((String) -> String?)? = null): List<GuideStep> {
+        val lines = markdown.lines()
+        val marker = looseMarker(lines) ?: return emptyList()
+        val base = basePath?.let { nfc(it).trimEnd('/') + "/" }
+        val steps = ArrayList<GuideStep>()
+        var number: String? = null
+        var title = ""
+        var edits = ArrayList<StepEdit>()
+        var verify: String? = null
+        var readingVerify = false
+        var link: Pair<String, Int>? = null
+        var mention: String? = null
+        var inBlock = false
+        var fenceIndent = 0
+        var lang = ""
+        var infoFile: String? = null
+        var block = ArrayList<String>()
+
+        fun locate(name: String): String? = when {
+            name.startsWith("/") || name.startsWith("file://") -> resolve(name, basePath)
+            else -> findFile?.invoke(name) ?: if ('/' in name && basePath != null) resolve(name, basePath) else null
+        }
+
+        fun closeBlock() {
+            if (number == null) return
+            val firstComment = block.firstOrNull { it.isNotBlank() }?.trim()
+                ?.takeIf { it.startsWith("//") || it.startsWith("#") || it.startsWith("<!--") }
+                ?.let { FILE_MENTION.find(it)?.value }
+            val named = infoFile ?: firstComment
+            val path = named?.let(::locate) ?: link?.first ?: mention?.let(::locate) ?: return
+            val line = link?.takeIf { named == null }?.second ?: 1
+            if (lang == "diff") {
+                val diff = block.map(::diffLine)
+                if (diff.any { it.kind != ' ' }) edits += StepEdit(path, line, diff)
+            } else if (lang in CODE_LANGS && StepMatcher.significant(block).isNotEmpty()) {
+                edits += StepEdit(path, line, block.map { DiffLine('+', it) }, loose = true)
+            }
+        }
+
+        fun close() {
+            number?.let { n ->
+                val inProject = edits.filter { base == null || nfc(it.path).startsWith(base) }
+                steps += GuideStep(n, title, inProject, verify)
+            }
+            edits = ArrayList(); verify = null; readingVerify = false; link = null; mention = null
+        }
+
+        for (raw in lines) {
+            val trimmed = raw.trim()
+            if (inBlock) {
+                if (trimmed.startsWith("```")) {
+                    inBlock = false
+                    closeBlock()
+                    link = null
+                } else block += dedent(raw, fenceIndent)
+                continue
+            }
+            if (trimmed.startsWith("```")) {
+                val info = trimmed.removePrefix("```").trim()
+                inBlock = true; block = ArrayList(); fenceIndent = raw.length - raw.trimStart(' ').length
+                lang = info.substringBefore(' ').substringBefore(':').lowercase()
+                infoFile = FILE_MENTION.find(info)?.value
+                readingVerify = false
+                continue
+            }
+            val topLevel = raw.isNotEmpty() && !raw[0].isWhitespace()
+            val m = if (topLevel) marker.matchEntire(trimmed) else null
+            if (m != null) {
+                close()
+                number = m.groupValues[1]
+                title = clip(clean(m.groupValues[2]).trimEnd('*', ':').trim(), 80)
+                // Sigue abajo: la misma línea puede nombrar el archivo («1. Crea la clase en `CartItem.kt`»).
+            } else if (trimmed.startsWith("#")) { close(); number = null; continue }
+            if (number == null) continue
+            LINK.findAll(trimmed).lastOrNull()?.let { l -> link = resolve(l.groupValues[1], basePath) to (l.groupValues[2].toIntOrNull() ?: 1) }
+            FILE_MENTION.findAll(trimmed).lastOrNull()?.let { mention = it.value }
+            val v = VERIFY.matchEntire(trimmed)
+            when {
+                v != null -> { verify = clean(v.groupValues[1]); readingVerify = true }
+                readingVerify && trimmed.isNotEmpty() -> verify = (verify.orEmpty() + " " + clean(trimmed)).trim()
+                trimmed.isEmpty() -> readingVerify = false
+            }
+        }
+        close()
+        // Una guía dice qué hacer: la mayoría de sus pasos empiezan con una acción. Así un informe («1. El logo cortado
+        // (corregido)») o una revisión («1. 🔴 Bug en…») con código no se confunden con un plan.
+        val instructions = steps.count { isInstruction(it.title) }
+        return if (steps.size >= 2 && steps.any { it.edits.isNotEmpty() } && instructions * 10 >= steps.size * 6) steps else emptyList()
+    }
+
+    /**
+     * Verbos con los que empieza una instrucción, en español (tú, usted e infinitivo) y en inglés, y «En tu ViewModel…» /
+     * «In your…», que dice dónde hacer algo.
+     */
+    private val INSTRUCTION = Regex(
+        "^(?:(?:crea|agrega|añade|cambia|reemplaza|borra|elimina|quita|mueve|implementa|define|escribe|abre|usa|llama|pasa|importa|" +
+            "configura|instala|ejecuta|corre|modifica|actualiza|inyecta|registra|declara|conecta|extrae|renombra|prueba|verifica|" +
+            "compila|sincroniza|guarda|muestra|corrige|reemplace|cree|agregue|añada|cambie|elimine|implemente|haz|ve)\\b|" +
+            "(?:crear|agregar|añadir|cambiar|reemplazar|borrar|eliminar|quitar|mover|implementar|definir|escribir|abrir|usar|llamar|" +
+            "pasar|importar|configurar|instalar|ejecutar|correr|modificar|actualizar|inyectar|registrar|declarar|conectar|extraer|" +
+            "renombrar|probar|verificar|compilar|sincronizar|guardar|mostrar|corregir|hacer)\\b|" +
+            "(?:add|create|update|replace|remove|delete|move|implement|define|write|open|use|call|pass|import|configure|install|run|" +
+            "modify|inject|register|declare|connect|make|extract|rename|test|verify|build|sync|set up|setup|fix|change|wire)\\b|" +
+            "(?:en|dentro de|in|inside)\\s+(?:tu|el|la|los|las|your|the)\\b)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun isInstruction(title: String): Boolean =
+        INSTRUCTION.containsMatchIn(title.trimStart { !it.isLetter() }.replace("`", ""))
+
+    /** El formato de pasos del mensaje: el primero de los flexibles que aparece al menos dos veces fuera del código. */
+    private fun looseMarker(lines: List<String>): Regex? {
+        val counts = IntArray(3)
+        val markers = listOf(NUM_HEADING, PLAIN_STEP, LIST_STEP)
+        var inBlock = false
+        for (raw in lines) {
+            val t = raw.trim()
+            if (t.startsWith("```")) { inBlock = !inBlock; continue }
+            if (inBlock || raw.isEmpty() || raw[0].isWhitespace()) continue
+            markers.forEachIndexed { i, r -> if (r.matches(t)) counts[i]++ }
+        }
+        return markers.indices.firstOrNull { counts[it] >= 2 }?.let { markers[it] }
+    }
+
+    private fun clip(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1).trimEnd() + "…"
+
+    private fun parseStrict(markdown: String, basePath: String?): List<GuideStep> {
         val steps = ArrayList<GuideStep>()
         var number: String? = null
         var title = ""
@@ -351,6 +519,7 @@ object StepMatcher {
      * [hasErrors]: el IDE marca errores en ese archivo.
      */
     fun status(file: List<String>, edit: StepEdit, hasErrors: Boolean, seenPlaced: Boolean): EditStatus {
+        if (edit.loose) return looseStatus(file, edit, hasErrors)
         val text = file.joinToString("\n")
         val afterFound = find(file, edit.after).isNotEmpty()
         val beforeFound = find(file, edit.before).isNotEmpty()
@@ -391,6 +560,38 @@ object StepMatcher {
 
     /** Etiqueta de lo que falta en un paso que borra código: «Te falta borrar (en X.kt): …». */
     const val DELETE_LABEL = "borrar"
+
+    /** Etiqueta de lo que falta de un bloque de código normal: «Te falta agregar (en X.kt): …». */
+    const val ADD_LABEL = "agregar"
+
+    /** Parte del código que se completa con «...» o «…» («// ... tu código», «fun algo(...)»). */
+    private val ELISION = Regex("\\.\\.\\.|…")
+    private val COMMENT = Regex("^(//|/\\*|\\*|<!--|#).*")
+
+    /**
+     * Líneas de un bloque de código que permiten saber si ya lo escribiste: sin comentarios, sin las que la IA abrevia con
+     * «...» y sin las muy cortas («}», «)»), que aparecen en cualquier archivo.
+     */
+    fun significant(lines: List<String>): List<String> =
+        lines.map(::norm).filter { it.length >= 8 && !ELISION.containsMatchIn(it) && !COMMENT.matches(it) }
+
+    /**
+     * Un bloque de código normal no dice qué reemplaza ni dónde va: está hecho si al menos el 80 % de sus líneas
+     * importantes ya están en el archivo (en cualquier orden y sangría) y compila. Así un nombre distinto o una línea
+     * escrita a tu manera no lo bloquean. Lo que falta se muestra como «agregar» con la primera línea que no está.
+     */
+    private fun looseStatus(file: List<String>, edit: StepEdit, hasErrors: Boolean): EditStatus {
+        val want = significant(edit.added)
+        val have = file.map(::norm).toHashSet()
+        val present = want.filter { it in have }
+        val complete = want.isNotEmpty() && present.size * 10 >= want.size * 8 && !hasErrors
+        val firstMissing = want.firstOrNull { it !in have }
+        // El cursor va justo después de lo último que ya escribiste del bloque; si no hay nada, al inicio del archivo.
+        val last = present.lastOrNull()?.let { p -> file.indexOfFirst { norm(it) == p } }?.takeIf { it >= 0 }
+        val cursor = last?.let { (it + 1).coerceAtMost(file.size - 1) } ?: if (file.isEmpty()) null else 0
+        val marks = if (complete || firstMissing == null) emptyList() else listOf(TodoMark(ADD_LABEL, firstMissing, TodoState.MISSING))
+        return EditStatus(marks, false, false, complete, cursor, present.isNotEmpty())
+    }
 
     /**
      * Primera línea (0-based) del código que el paso manda borrar y que sigue en el archivo; null si ya no está.
@@ -467,6 +668,30 @@ object StepPrompts {
         append(" Me falta: ")
         append(left.joinToString("; ") { (e, s) -> pending(e, s) })
         append(". Céntrate en lo que me falta.")
+    }
+
+    /**
+     * Mensaje para avisar a la IA del plan que terminaste todos los pasos. Empieza con «Revisa», la palabra con la que
+     * pides una revisión crítica, y dice cómo se comprobó cada paso para que la IA sepa qué revisar con más cuidado.
+     * [confirmed]: ids de los pasos que el Mentor confirmó con «¿Cumple el paso?»; [manual]: los que marcaste como hechos.
+     */
+    fun doneMessage(steps: List<GuideStep>, confirmed: Set<String>, manual: Set<String>): String = buildString {
+        append(if (steps.size == 1) "Revisa: terminé el paso de tu plan:" else "Revisa: terminé los ${steps.size} pasos de tu plan:")
+        append('\n')
+        steps.forEach { s ->
+            val how = when {
+                s.id in confirmed -> "el Mentor lo confirmó"
+                s.id in manual || s.edits.isEmpty() -> "lo marqué como hecho"
+                else -> "el Mentor no ve nada pendiente, pero no lo confirmó"
+            }
+            append("- ").append(s.label).append(" (").append(how).append(")\n")
+        }
+        val files = steps.flatMap { it.edits }.map { it.fileName }.distinct()
+        if (files.isNotEmpty()) append("Archivos que cambié: ").append(files.joinToString(", ")).append(".\n")
+        // Explícito, para que cualquier IA haga una revisión de verdad (no todos tienen una regla que defina «Revisa»).
+        append("Antes de seguir, valida mi trabajo: compila, revisa el código de esos archivos contra cada paso y dime ")
+        append("si quedó bien, qué está mal o qué mejorarías, de lo más grave a lo menos grave, con archivo y línea. ")
+        append("No lo corrijas por mí: dame pistas.")
     }
 
     /** «borrar en HomeViewModel.kt, línea 207 («HomeAction.NotificationClicked -> {»)», o el cambio y dónde va. */

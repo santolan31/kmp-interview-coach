@@ -2,7 +2,7 @@
   "name": "mentor",
   "displayName": "Mentor",
   "description": "Un mentor de IA dentro del editor: te guía con pistas y preguntas en vez de escribir el código por ti. Usa tu clave de API o tu suscripción (Claude Code, Cursor), y sigue los planes de Claude Code y Antigravity.",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "publisher": "santolan31",
   "license": "SEE LICENSE IN LICENSE",
   "repository": { "type": "git", "url": "https://github.com/santolan31/kmp-interview-coach" },

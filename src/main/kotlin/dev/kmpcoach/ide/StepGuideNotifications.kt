@@ -56,7 +56,11 @@ class StepGuideNotifications : EditorNotificationProvider, DumbAware {
                     val where = next.edits.firstOrNull()?.fileName?.let { " · $it" }.orEmpty()
                     panel.createActionLabel("Avanzar al paso ${next.number}$where ›") { guide.advance(view) }
                 } else {
-                    panel.createActionLabel("Terminaste los pasos de esta guía") {}
+                    // Último paso: lo que sigue es contárselo a la IA del plan (sea cual sea) para que revise y diga qué sigue.
+                    panel.text = "✓ Terminaste los pasos de esta guía"
+                    panel.createActionLabel("Continuar al chat ›") { guide.notifyDone(file, view) }.toolTipText =
+                        "Copia un resumen de lo que hiciste para la IA que te dio el plan y abre su chat si está en el IDE. " +
+                            "Así valida si tu código quedó bien o qué mejorar."
                 }
                 if (verdict == null && cur.edits.isNotEmpty()) addVerify(panel, guide, step)
             }

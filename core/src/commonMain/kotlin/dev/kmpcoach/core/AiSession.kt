@@ -98,5 +98,12 @@ object ClaudeSessions {
     fun lastRequest(turns: List<SessionTurn>): String? =
         turns.lastOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ")?.let { clip(it, 90) }
 
+    /**
+     * El pedido tuyo que originó el mensaje de la IA escrito en [at]: tu último mensaje antes de ese momento. Sirve de
+     * título para reconocer la conversación del plan aunque después le hayas escrito otras cosas.
+     */
+    fun requestBefore(turns: List<SessionTurn>, at: String): String? =
+        turns.lastOrNull { it.role == "user" && it.at <= at && it.text.isNotBlank() }?.text?.replace(Regex("\\s+"), " ")?.trim()?.let { clip(it, 70) }
+
     private fun clip(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1).trimEnd() + "…"
 }
